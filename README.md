@@ -16,6 +16,7 @@
 sudo apt-get update
 sudo apt-get install -y ffmpeg python3-venv
 
+mkdir -p <path-to-asr-pool-dir>
 git clone git@github.com:Bobcat/asr-pool.git <path-to-asr-pool-dir>
 cd <path-to-asr-pool-dir>
 python3 -m venv .venv
@@ -103,11 +104,8 @@ curl -sS -X POST http://127.0.0.1:18090/asr/v1/requests \
   -F 'audio_file=@/path/to/audio.wav'
 ```
 
-After completion, fetch subtitles from:
+## Retrieve Results
+
+After completion, fetch results from:
 
 - `GET /asr/v1/requests/{request_id}/artifacts/srt`
-
-## Runtime Notes
-
-- Uploaded audio and generated artifacts are written under `paths.work_root`.
-- Completion streaming uses Server-Sent Events on `/asr/v1/completions/stream`.
