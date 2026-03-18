@@ -67,7 +67,7 @@
     "beam_size": 5,
     "align_model": "",
     "diarize_model": "",
-    "venv": "",
+    "venv": ".venv",
     "threads": {
       "omp": null,
       "mkl": null,

@@ -13,16 +13,34 @@
 ## Quick Start
 
 ```bash
+sudo apt-get update
+sudo apt-get install -y ffmpeg python3-venv
+
 git clone git@github.com:Bobcat/asr-pool.git <path-to-asr-pool-dir>
 cd <path-to-asr-pool-dir>
 python3 -m venv .venv
+.venv/bin/pip install --upgrade pip setuptools wheel
 .venv/bin/pip install -r requirements.txt
+.venv/bin/pip install whisperx faster-whisper
 .venv/bin/uvicorn main:app --host 127.0.0.1 --port 18090
 ```
 
 Service status endpoint:
 
 - `GET http://127.0.0.1:18090/asr/v1/pool`
+
+## Systemd Example
+
+```bash
+mkdir -p ~/.config/systemd/user ~/.config/asr-pool-dev
+cp deploy/systemd/transcribe-asr-pool-dev.service ~/.config/systemd/user/
+sed -i "s|<asr-pool-dir>|$PWD|g" ~/.config/systemd/user/transcribe-asr-pool-dev.service
+cp deploy/env/asr-pool-dev.env.example ~/.config/asr-pool-dev/dev.env
+systemctl --user daemon-reload
+systemctl --user enable --now transcribe-asr-pool-dev.service
+```
+
+Set `HF_TOKEN` in `~/.config/asr-pool-dev/dev.env` when you need diarization models that require Hugging Face access.
 
 ## Configuration
 
@@ -39,12 +57,17 @@ Common settings:
 - `scheduler.request_timeouts_s.*`: timeout defaults by priority
 - `whisperx.*`: WhisperX model/runtime options
 
-Example local override (`config/local.json`) to run with one slot:
+Default runtime is GPU (`whisperx.device = "cuda"`).
+
+Example local override (`config/local.json`) to run with one slot on CPU-only machines:
 
 ```json
 {
   "scheduler": {
     "runner_slots": 1
+  },
+  "whisperx": {
+    "device": "cpu"
   }
 }
 ```
