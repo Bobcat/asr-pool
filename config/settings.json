@@ -1,0 +1,76 @@
+{
+  "api": {
+    "root_path": ""
+  },
+  "paths": {
+    "work_root": "data/asr_pool"
+  },
+  "scheduler": {
+    "runner_slots": 2,
+    "interactive_burst_max": 8,
+    "queue_limits": {
+      "interactive": 8,
+      "normal": 20,
+      "background": 50
+    },
+    "request_timeouts_s": {
+      "interactive": 30,
+      "normal": 120,
+      "background": 300
+    },
+    "stage_poll_ms": 150
+  },
+  "lifecycle": {
+    "warm_start": {
+      "enabled": true,
+      "timeout_s": 180
+    },
+    "watchdog": {
+      "enabled": true,
+      "poll_ms": 2000,
+      "recover_timeout_s": 60
+    }
+  },
+  "records": {
+    "max": 10000,
+    "ttl_s": {
+      "completed": 900,
+      "failed": 1800,
+      "cancelled": 600
+    },
+    "prune_interval_s": 30
+  },
+  "completions": {
+    "max_events": 20000,
+    "stream": {
+      "sse_heartbeat_s": 10.0
+    }
+  },
+  "warm_runner": {
+    "prewarm_timeout_s": 180.0,
+    "prewarm_language": null,
+    "prewarm_align_enabled": false,
+    "request_timeout_s": 120.0,
+    "response_poll_ms": 50
+  },
+  "whisperx": {
+    "model": "large-v3",
+    "device": "cuda",
+    "compute_type": "int8",
+    "batch_size": 1,
+    "batch_size_default_cap": 4,
+    "chunk_size": 20,
+    "chunk_size_low_latency": 10,
+    "low_latency_backend": "whisperx",
+    "beam_size": 5,
+    "align_model": "",
+    "diarize_model": "",
+    "venv": "",
+    "threads": {
+      "omp": null,
+      "mkl": null,
+      "torch": null,
+      "torch_interop": null
+    }
+  }
+}
