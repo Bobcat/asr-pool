@@ -1,18 +1,10 @@
 __pycache__/
 *.py[cod]
-*.so
 .venv/
 venv/
-.env
-.env.*
-.mypy_cache/
-.pytest_cache/
-ruff_cache/
-coverage/
-htmlcov/
+
+data/
 *.log
-/tmp/
-/tmp_*/
-/data/
 
 config/local.json
+AGENTS.md
