@@ -16,14 +16,15 @@
 sudo apt-get update
 sudo apt-get install -y ffmpeg python3-venv
 
-mkdir -p <path-to-asr-pool-dir>
-git clone git@github.com:Bobcat/asr-pool.git <path-to-asr-pool-dir>
-cd <path-to-asr-pool-dir>
+ASR_POOL_DIR="$HOME/projects/asr-pool"
+mkdir -p "$ASR_POOL_DIR"
+git clone https://github.com/Bobcat/asr-pool.git "$ASR_POOL_DIR"
+cd "$ASR_POOL_DIR"
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip setuptools wheel
 .venv/bin/pip install -r requirements.txt
 .venv/bin/pip install whisperx faster-whisper
-.venv/bin/uvicorn main:app --host 127.0.0.1 --port 18090
+.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 18090
 ```
 
 Service status endpoint:
@@ -33,15 +34,30 @@ Service status endpoint:
 ## Systemd Example
 
 ```bash
-mkdir -p ~/.config/systemd/user ~/.config/asr-pool-dev
-cp deploy/systemd/transcribe-asr-pool-dev.service ~/.config/systemd/user/
-sed -i "s|<asr-pool-dir>|$PWD|g" ~/.config/systemd/user/transcribe-asr-pool-dev.service
-cp deploy/env/asr-pool-dev.env.example ~/.config/asr-pool-dev/dev.env
+ASR_POOL_DIR="$HOME/projects/asr-pool"
+
+mkdir -p ~/.config/systemd/user ~/.config/asr-pool
+cat > ~/.config/systemd/user/asr-pool.service <<EOF
+[Unit]
+Description=ASR Pool (Uvicorn)
+
+[Service]
+Type=simple
+WorkingDirectory=$ASR_POOL_DIR
+ExecStart=$ASR_POOL_DIR/.venv/bin/python3 -m uvicorn main:app --host 127.0.0.1 --port 18090
+Restart=always
+RestartSec=2
+EnvironmentFile=-%h/.config/asr-pool/asr-pool.env
+
+[Install]
+WantedBy=default.target
+EOF
+cp "$ASR_POOL_DIR/deploy/env/asr-pool.env.example" ~/.config/asr-pool/asr-pool.env
 systemctl --user daemon-reload
-systemctl --user enable --now transcribe-asr-pool-dev.service
+systemctl --user enable --now asr-pool.service
 ```
 
-Set `HF_TOKEN` in `~/.config/asr-pool-dev/dev.env` when you need diarization models that require Hugging Face access.
+Set `HF_TOKEN` in `~/.config/asr-pool/asr-pool.env` when you need diarization models that require Hugging Face access.
 
 ## Configuration
 
