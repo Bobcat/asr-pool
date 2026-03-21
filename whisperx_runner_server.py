@@ -14,6 +14,7 @@ from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
+from asr_schema import ASR_SCHEMA_VERSION
 from whisperx_runner_imports import _apply_torch_thread_tuning, _as_positive_int, _cleanup_torch
 
 
@@ -393,7 +394,6 @@ class PersistentWhisperxRunner:
   def transcribe(self, envelope: dict[str, Any], *, progress_path: Path | None = None) -> dict[str, Any]:
     request = dict(envelope.get("request") or {})
     work = dict(envelope.get("work") or {})
-    req_schema_version = str(request.get("schema_version") or "").strip().lower()
     req_id = str(request.get("request_id") or "")
     effective_options = dict(request.get("effective_options") or {})
     outputs = dict(request.get("outputs") or {})
@@ -402,24 +402,9 @@ class PersistentWhisperxRunner:
     out_dir_raw = str(work.get("whisperx_out_dir") or "").strip()
     out_dir = Path(out_dir_raw) if out_dir_raw else Path()
 
-    if req_schema_version != "asr_v2":
-      return {
-        "schema_version": "asr_v2",
-        "request_id": req_id,
-        "ok": False,
-        "effective_options": effective_options,
-        "error": {
-          "code": "ASR_SCHEMA_UNSUPPORTED",
-          "message": f"Unsupported schema_version: {req_schema_version or '<missing>'}",
-          "retryable": False,
-          "details": {"supported": ["asr_v2"]},
-        },
-        "warnings": [],
-      }
-
     if not local_path.exists():
       return {
-        "schema_version": "asr_v2",
+        "schema_version": ASR_SCHEMA_VERSION,
         "request_id": req_id,
         "ok": False,
         "effective_options": effective_options,
@@ -434,7 +419,7 @@ class PersistentWhisperxRunner:
     unsupported_outputs = [k for k in ("text", "segments") if bool(outputs.get(k, False))]
     if unsupported_outputs:
       return {
-        "schema_version": "asr_v2",
+        "schema_version": ASR_SCHEMA_VERSION,
         "request_id": req_id,
         "ok": False,
         "effective_options": effective_options,
@@ -448,7 +433,7 @@ class PersistentWhisperxRunner:
       }
     if not out_dir_raw:
       return {
-        "schema_version": "asr_v2",
+        "schema_version": ASR_SCHEMA_VERSION,
         "request_id": req_id,
         "ok": False,
         "effective_options": effective_options,
@@ -466,7 +451,7 @@ class PersistentWhisperxRunner:
       file_size = -1
     if file_size == 0:
       return {
-        "schema_version": "asr_v2",
+        "schema_version": ASR_SCHEMA_VERSION,
         "request_id": req_id,
         "ok": False,
         "effective_options": effective_options,
@@ -482,7 +467,7 @@ class PersistentWhisperxRunner:
       frame_count = _wave_frame_count(local_path)
       if frame_count is None:
         return {
-          "schema_version": "asr_v2",
+          "schema_version": ASR_SCHEMA_VERSION,
           "request_id": req_id,
           "ok": False,
           "effective_options": effective_options,
@@ -496,7 +481,7 @@ class PersistentWhisperxRunner:
         }
       if frame_count <= 0:
         return {
-          "schema_version": "asr_v2",
+          "schema_version": ASR_SCHEMA_VERSION,
           "request_id": req_id,
           "ok": False,
           "effective_options": effective_options,
@@ -759,7 +744,7 @@ class PersistentWhisperxRunner:
         srts = sorted(out_dir.glob("*.srt"), key=lambda p: p.stat().st_mtime)
         if not srts:
           return {
-            "schema_version": "asr_v2",
+            "schema_version": ASR_SCHEMA_VERSION,
             "request_id": req_id,
             "ok": False,
             "effective_options": effective_options,
@@ -828,7 +813,7 @@ class PersistentWhisperxRunner:
         warnings.append("low_latency_backend_faster_whisper_direct_experimental")
 
       return {
-        "schema_version": "asr_v2",
+        "schema_version": ASR_SCHEMA_VERSION,
         "request_id": req_id,
         "ok": True,
         "effective_options": effective_options,
@@ -900,7 +885,7 @@ def _handle_command(runner: PersistentWhisperxRunner, cmd_obj: dict[str, Any]) -
     except Exception:
       request = {}
     response = {
-      "schema_version": "asr_v2",
+      "schema_version": ASR_SCHEMA_VERSION,
       "request_id": str(request.get("request_id") or ""),
       "ok": False,
       "effective_options": dict(request.get("effective_options") or {}),

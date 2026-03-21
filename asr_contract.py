@@ -12,7 +12,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from asr_schema import (
   ASR_SCHEMA_VERSION,
-  ASR_SCHEMA_VERSIONS_SUPPORTED,
 )
 
 
@@ -112,7 +111,7 @@ def prepare_request(raw_request: dict[str, Any]) -> dict[str, Any]:
     raise AsrRequestError(
       "ASR_SCHEMA_UNSUPPORTED",
       f"Unsupported schema_version: {schema_version or '<missing>'}",
-      details={"supported": list(ASR_SCHEMA_VERSIONS_SUPPORTED)},
+      details={"supported": [ASR_SCHEMA_VERSION]},
     )
   request_id = str(req.get("request_id") or "").strip()
   if not request_id:

@@ -14,7 +14,6 @@ from pool_config import get_int, get_setting, get_str
 WHISPERX_ENV_FILE = Path.home() / ".config" / "whisperx" / "env"
 DEFAULT_WHISPERX_VENV = Path.home() / "whisperx" / ".venv"
 
-
 def _load_server_config() -> dict[str, Any]:
   cfg: dict[str, Any] = {
     "model": get_str("whisperx.model", "large-v3"),
