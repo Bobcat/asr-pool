@@ -10,19 +10,18 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from whisperx_runner_env import _build_runner_env, _load_server_config, _resolve_whisperx_python
+from whisperx_runner_env import (
+  _build_runner_env,
+  _load_server_config,
+  _normalize_optional_language,
+  _resolve_whisperx_python,
+)
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
   sys.path.insert(0, str(_REPO_ROOT))
 
 from pool_config import get_bool, get_float, get_setting
 
-
-def _normalize_optional_language(value: Any) -> str | None:
-  if value is None:
-    return None
-  text = str(value).strip()
-  return text or None
 
 
 def _fingerprint_cfg(cfg: dict[str, Any]) -> str:
