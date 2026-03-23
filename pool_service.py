@@ -16,7 +16,7 @@ if str(_REPO_ROOT) not in sys.path:
 from asr_contract import AsrRequestError, build_error_response, prepare_request
 from pool_completions import PoolCompletionFeed
 from pool_config import get_bool, get_float, get_int, get_str
-from pool_helpers import _iso_utc, _safe_token
+from pool_helpers import _iso_utc, _parse_utc_unix, _safe_token
 from pool_records import PoolRecord, PoolRecordStore
 from pool_scheduler import PoolScheduler
 
@@ -603,6 +603,100 @@ class AsrPoolService:
                     "interactive_default_fairness_key": str(INTERACTIVE_DEFAULT_FAIRNESS_KEY),
                     "interactive_burst_max": int(self._interactive_burst_max),
                     "fairness_mode": "burst_then_round_robin_interactive_sessions_and_noninteractive_priorities",
+                },
+            }
+
+    async def ops_metrics_v1(self, *, window_s: int = 300) -> dict[str, Any]:
+        safe_window_s = max(60, int(window_s))
+        now_unix = float(time.time())
+        now_utc = _iso_utc(now_unix)
+        async with self._lock:
+            queued_interactive = self._priority_depth("interactive")
+            queued_normal = self._priority_depth("normal")
+            queued_background = self._priority_depth("background")
+            running = sum(1 for rec in self._record_store.values() if rec.state in {"running", "cancel_requested"})
+            slots_total = int(self._runner_slots)
+            slots_busy = int(running)
+            slots_available = int(max(0, slots_total - slots_busy))
+
+            queue_depth_by_priority = {
+                "interactive": int(queued_interactive),
+                "normal": int(queued_normal),
+                "background": int(queued_background),
+            }
+            queue_depth_total = int(sum(queue_depth_by_priority.values()))
+
+            oldest_queued_s = 0.0
+            for rec in self._record_store.values():
+                if str(rec.state or "").strip().lower() != "queued":
+                    continue
+                submitted_unix = _parse_utc_unix(rec.submitted_at_utc)
+                if submitted_unix is None:
+                    continue
+                age_s = max(0.0, now_unix - float(submitted_unix))
+                if age_s > oldest_queued_s:
+                    oldest_queued_s = float(age_s)
+
+            completed_5m = 0
+            failed_5m = 0
+            cancelled_5m = 0
+            for rec in self._record_store.values():
+                state = str(rec.state or "").strip().lower()
+                if state not in {"completed", "failed", "cancelled"}:
+                    continue
+                finished_unix = _parse_utc_unix(rec.finished_at_utc)
+                if finished_unix is None:
+                    continue
+                if (now_unix - float(finished_unix)) > float(safe_window_s):
+                    continue
+                if state == "completed":
+                    completed_5m += 1
+                elif state == "failed":
+                    failed_5m += 1
+                elif state == "cancelled":
+                    cancelled_5m += 1
+            terminal_5m = int(completed_5m + failed_5m + cancelled_5m)
+            fail_rate_5m = (float(failed_5m) / float(terminal_5m)) if terminal_5m > 0 else 0.0
+
+            health = "ok"
+            health_reason = "Healthy"
+            if slots_available <= 0 and queue_depth_total > 0 and oldest_queued_s >= 30.0:
+                health = "error"
+                health_reason = "No free slots with queued backlog older than 30s"
+            elif oldest_queued_s >= 15.0 or fail_rate_5m >= 0.05:
+                health = "warn"
+                if oldest_queued_s >= 15.0:
+                    health_reason = "Queued backlog age above 15s"
+                else:
+                    health_reason = "5m failure rate above threshold"
+
+            return {
+                "service": "asr-pool",
+                "version": "ops_v1",
+                "now_utc": str(now_utc),
+                "window_s": int(safe_window_s),
+                "health": str(health),
+                "health_reason": str(health_reason),
+                "summary": {
+                    "slots_total": int(slots_total),
+                    "slots_busy": int(slots_busy),
+                    "slots_available": int(slots_available),
+                    "queue_depth_total": int(queue_depth_total),
+                    "queue_depth_by_priority": dict(queue_depth_by_priority),
+                    "oldest_queued_s": round(float(oldest_queued_s), 3),
+                    "request_fail_rate_5m": round(float(fail_rate_5m), 6),
+                    "requests_completed_5m": int(completed_5m),
+                },
+                "details": {
+                    "terminal_counts_5m": {
+                        "completed": int(completed_5m),
+                        "failed": int(failed_5m),
+                        "cancelled": int(cancelled_5m),
+                    },
+                    "watchdog": {
+                        "enabled": bool(self._watchdog_enabled),
+                        "restarts_total": int(sum(int(v) for v in self._watchdog_restart_count)),
+                    },
                 },
             }
 

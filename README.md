@@ -31,6 +31,11 @@ Service status endpoint:
 
 - `GET http://127.0.0.1:18090/asr/v1/pool`
 
+Observability endpoints:
+
+- `GET http://127.0.0.1:18090/ops` (live operator page)
+- `GET http://127.0.0.1:18090/ops/metrics` (JSON metrics envelope: `service`, `version`, `now_utc`, `window_s`, `health`, `summary`, `details`)
+
 ## Systemd Example
 
 ```bash
