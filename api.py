@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from pool_config import get_float, get_str
 from pool_helpers import _iso_utc, _safe_token
@@ -99,6 +99,83 @@ def _sse_json_event(*, event: str, data: dict[str, Any], event_id: str | None = 
         lines.append(f"data: {row}")
     lines.append("")
     return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _ops_page_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ASR Pool Operations</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --card: #fff;
+      --text: #161616;
+      --muted: #5f6470;
+      --line: #d8dde8;
+      --ok: #157f3b;
+      --warn: #9a6b00;
+      --error: #b42318;
+      font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    html, body { height: 100%; background: var(--bg); overflow: hidden; }
+    body { margin: 0; color: var(--text); }
+    main { max-width: 980px; margin: 0 auto; padding: 16px; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; }
+    h1 { margin: 0 0 10px 0; font-size: 22px; }
+    #meta { margin: 0 0 12px 0; color: var(--muted); font-size: 13px; }
+    .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+    .card .k { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    .card .v { font-size: 18px; font-weight: 700; }
+    .badge { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 700; color: #fff; }
+    .badge.ok { background: var(--ok); }
+    .badge.warn { background: var(--warn); }
+    .badge.error { background: var(--error); }
+    pre { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px; overflow: auto; margin: 0; flex: 1; min-height: 0; }
+    @media (max-width: 940px) { .cards { grid-template-columns: 1fr 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ASR Pool Operations</h1>
+    <div id="meta">Loading...</div>
+    <div class="cards">
+      <div class="card"><div class="k">Slots Busy / Total</div><div id="slots" class="v">-</div></div>
+      <div class="card"><div class="k">Queue Depth Total</div><div id="queue_total" class="v">-</div></div>
+      <div class="card"><div class="k">Completed (5m)</div><div id="completed" class="v">-</div></div>
+      <div class="card"><div class="k">Fail Rate (5m)</div><div id="fail_rate" class="v">-</div></div>
+    </div>
+    <pre id="raw">loading...</pre>
+  </main>
+  <script>
+    const byId = (id) => document.getElementById(id);
+    async function refresh() {
+      try {
+        const resp = await fetch('/ops/metrics', { cache: 'no-store' });
+        const data = await resp.json();
+        const s = data.summary || {};
+        const h = String(data.health || 'warn').toLowerCase();
+        const reason = String(data.health_reason || "");
+        const reasonText = reason ? (" | reason: " + reason) : "";
+        byId('meta').innerHTML = "Health: <span class='badge " + h + "'>" + h + "</span>" + reasonText + " | updated: " + new Date().toLocaleTimeString();
+        byId('slots').textContent = `${s.slots_busy ?? '-'} / ${s.slots_total ?? '-'}`;
+        byId('queue_total').textContent = `${s.queue_depth_total ?? '-'}`;
+        byId('fail_rate').textContent = `${s.request_fail_rate_5m ?? '-'}`;
+        byId('completed').textContent = `${s.requests_completed_5m ?? '-'}`;
+        byId('raw').textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        byId('meta').textContent = `Metrics unavailable: ${String(e)}`;
+        byId('raw').textContent = `fetch error: ${String(e)}`;
+      }
+    }
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>"""
 
 
 @app.on_event("startup")
@@ -403,6 +480,17 @@ async def get_asr_pending_status(
 @app.get("/asr/v1/pool")
 async def get_asr_pool_status(_req: Request) -> JSONResponse:
     body = await POOL.pool_status()
+    return JSONResponse(status_code=200, content=body)
+
+
+@app.get("/ops")
+async def get_ops_page() -> HTMLResponse:
+    return HTMLResponse(content=_ops_page_html(), status_code=200)
+
+
+@app.get("/ops/metrics")
+async def get_ops_metrics(window_s: int = Query(default=300)) -> JSONResponse:
+    body = await POOL.ops_metrics_v1(window_s=max(60, int(window_s)))
     return JSONResponse(status_code=200, content=body)
 
 
