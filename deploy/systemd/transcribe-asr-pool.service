@@ -1,0 +1,15 @@
+[Unit]
+Description=Transcribe ASR Pool (Uvicorn)
+After=network.target
+
+[Service]
+User=gunnar
+Group=gunnar
+WorkingDirectory=/srv/asr-pool
+ExecStart=/srv/asr-pool/.venv/bin/python3 -m uvicorn main:app --host 127.0.0.1 --port 8090
+Restart=always
+RestartSec=2
+EnvironmentFile=-/etc/asr-pool/asr-pool.env
+
+[Install]
+WantedBy=multi-user.target
