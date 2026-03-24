@@ -69,15 +69,7 @@ Set `HF_TOKEN` in `~/.config/asr-pool/asr-pool.env` when you need diarization mo
 Configuration files are loaded in this order:
 
 1. `config/settings.json`
-2. `config/local.json` (optional, gitignored)
-
-Common settings:
-
-- `paths.work_root`: local storage root for job inputs/results
-- `scheduler.runner_slots`: number of warm runner slots (default `2`)
-- `scheduler.queue_limits.*`: queue caps by priority
-- `scheduler.request_timeouts_s.*`: timeout defaults by priority
-- `whisperx.*`: WhisperX model/runtime options
+2. `config/local.json` (optional, overrides)
 
 Default runtime is GPU (`whisperx.device = "cuda"`).
 
