@@ -801,48 +801,47 @@ class AsrPoolService:
                 pass
             await asyncio.sleep(float(self._stage_poll_interval_s))
 
-    async def _dequeue_next_request_id(self, slot_idx: int) -> str:
+    async def _dequeue_next_request_id(self, slot_idx: int) -> tuple[str, dict[str, Any], int]:
         async with self._cond:
             while True:
                 if self._stopping:
                     raise asyncio.CancelledError()
                 rid = self._scheduler.dequeue_next(slot_idx=slot_idx, records=self._record_store.records)
                 if rid:
-                    return rid
+                    rec = self._record_store.get(rid)
+                    if rec is None:
+                        continue
+                    if rec.state != "queued":
+                        continue
+                    rec.state = "running"
+                    rec.started_at_utc = _iso_utc()
+                    rec.stage = "dispatch"
+                    rec.stage_started_at_utc = rec.started_at_utc
+                    request = dict(rec.request)
+                    timeout_s = int(self._timeouts_s.get(rec.priority, 120))
+                    queue_wait_s = _seconds_between_utc(rec.submitted_at_utc, rec.started_at_utc)
+                    self._emit_event(
+                        "request_started",
+                        request_id=rec.request_id,
+                        priority=rec.priority,
+                        queue_key=rec.queue_key,
+                        slot_idx=int(slot_idx),
+                        timeout_s=int(timeout_s),
+                        queue_wait_s=(round(float(queue_wait_s), 3) if queue_wait_s is not None else None),
+                        queue_depth=self._queue_depth_snapshot_unlocked(),
+                    )
+                    return rid, request, timeout_s
                 await self._cond.wait()
 
     async def _runner_loop(self, slot_idx: int) -> None:
         while True:
-            rid = await self._dequeue_next_request_id(slot_idx)
+            rid, request, timeout_s = await self._dequeue_next_request_id(slot_idx)
             progress_path = (self._work_root / str(rid) / f"slot_{slot_idx}" / "_progress.json").resolve()
             try:
                 progress_path.parent.mkdir(parents=True, exist_ok=True)
                 progress_path.unlink(missing_ok=True)
             except Exception:
                 pass
-            async with self._lock:
-                rec = self._record_store.get(rid)
-                if rec is None:
-                    continue
-                if rec.state != "queued":
-                    continue
-                rec.state = "running"
-                rec.started_at_utc = _iso_utc()
-                rec.stage = "dispatch"
-                rec.stage_started_at_utc = rec.started_at_utc
-                request = dict(rec.request)
-                timeout_s = int(self._timeouts_s.get(rec.priority, 120))
-                queue_wait_s = _seconds_between_utc(rec.submitted_at_utc, rec.started_at_utc)
-                self._emit_event(
-                    "request_started",
-                    request_id=rec.request_id,
-                    priority=rec.priority,
-                    queue_key=rec.queue_key,
-                    slot_idx=int(slot_idx),
-                    timeout_s=int(timeout_s),
-                    queue_wait_s=(round(float(queue_wait_s), 3) if queue_wait_s is not None else None),
-                    queue_depth=self._queue_depth_snapshot_unlocked(),
-                )
 
             stage_stop = asyncio.Event()
             stage_task = asyncio.create_task(
