@@ -18,8 +18,9 @@ _KNOWN_OPTION_KEYS = {
   "min_speakers",
   "max_speakers",
   "beam_size",
+  "chunk_size",
+  "asr_backend",
   "initial_prompt",
-  "latency_mode",
 }
 
 
@@ -44,7 +45,6 @@ def normalize_options(options: dict[str, Any] | None) -> dict[str, Any]:
     "align_enabled": False,
     "diarize_enabled": False,
     "speaker_mode": "none",
-    "latency_mode": "default",
   }
   for key, value in opts.items():
     if value is None:
@@ -80,11 +80,17 @@ def normalize_options(options: dict[str, Any] | None) -> dict[str, Any]:
     except Exception:
       resolved["beam_size"] = 5
 
-  if "latency_mode" in resolved and resolved["latency_mode"] is not None:
-    latency_mode = str(resolved["latency_mode"]).strip().lower()
-    if latency_mode not in {"low", "default"}:
-      latency_mode = "default"
-    resolved["latency_mode"] = latency_mode
+  if "chunk_size" in resolved and resolved["chunk_size"] is not None:
+    try:
+      resolved["chunk_size"] = max(1, int(resolved["chunk_size"]))
+    except Exception:
+      resolved["chunk_size"] = None
+
+  if "asr_backend" in resolved and resolved["asr_backend"] is not None:
+    asr_backend = str(resolved["asr_backend"]).strip().lower()
+    if asr_backend not in {"whisperx", "faster_whisper_direct"}:
+      asr_backend = None
+    resolved["asr_backend"] = asr_backend
 
   if "initial_prompt" in resolved and resolved["initial_prompt"] is not None:
     resolved["initial_prompt"] = str(resolved["initial_prompt"])

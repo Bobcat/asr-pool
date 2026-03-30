@@ -58,10 +58,8 @@
     "device": "cuda",
     "compute_type": "int8",
     "batch_size": 1,
-    "batch_size_default_cap": 4,
     "chunk_size": 20,
     "low_latency": {
-      "chunk_size": 10,
       "backend": "whisperx"
     },
     "beam_size": 5,
