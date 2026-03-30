@@ -326,11 +326,27 @@ class PersistentWhisperxRunner:
     t0 = time.monotonic()
     from whisperx.diarize import DiarizationPipeline  # type: ignore
 
-    diarize_pipe = DiarizationPipeline(
-      model_name=diarize_model,
-      use_auth_token=os.getenv("HF_TOKEN"),
-      device=device,
-    )
+    token = str(os.getenv("HF_TOKEN") or "").strip() or None
+    diarize_kwargs: dict[str, Any] = {
+      "model_name": diarize_model,
+      "device": device,
+    }
+    # WhisperX versions differ on auth kwarg name:
+    # - older: use_auth_token=
+    # - newer: token=
+    if token is not None:
+      try:
+        diarize_pipe = DiarizationPipeline(
+          **diarize_kwargs,
+          use_auth_token=token,
+        )
+      except TypeError:
+        diarize_pipe = DiarizationPipeline(
+          **diarize_kwargs,
+          token=token,
+        )
+    else:
+      diarize_pipe = DiarizationPipeline(**diarize_kwargs)
     self.diarizers[key] = diarize_pipe
     return diarize_pipe, False, max(0.0, float(time.monotonic() - t0))
 

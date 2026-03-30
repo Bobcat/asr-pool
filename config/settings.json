@@ -6,7 +6,7 @@
     "work_root": "data/asr_pool"
   },
   "scheduler": {
-    "runner_slots": 2,
+    "runner_slots": 6,
     "interactive_burst_max": 8,
     "queue_limits": {
       "interactive": 8,
@@ -56,8 +56,8 @@
   "whisperx": {
     "model": "large-v3",
     "device": "cuda",
-    "compute_type": "int8",
-    "batch_size": 1,
+    "compute_type": "float16",
+    "batch_size": 2,
     "chunk_size": 20,
     "low_latency": {
       "backend": "whisperx"
