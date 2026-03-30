@@ -19,11 +19,11 @@ from whisperx_runner_env import _normalize_optional_language
 from whisperx_runner_imports import _apply_torch_thread_tuning, _as_positive_int, _cleanup_torch
 
 
-LOW_LATENCY_BACKEND_WHISPERX = "whisperx"
-LOW_LATENCY_BACKEND_FASTER_WHISPER_DIRECT = "faster_whisper_direct"
-LOW_LATENCY_BACKEND_ALLOWED = {
-  LOW_LATENCY_BACKEND_WHISPERX,
-  LOW_LATENCY_BACKEND_FASTER_WHISPER_DIRECT,
+ASR_BACKEND_WHISPERX = "whisperx"
+ASR_BACKEND_FASTER_WHISPER_DIRECT = "faster_whisper_direct"
+ASR_BACKEND_ALLOWED = {
+  ASR_BACKEND_WHISPERX,
+  ASR_BACKEND_FASTER_WHISPER_DIRECT,
 }
 
 
@@ -161,11 +161,11 @@ class PersistentWhisperxRunner:
       int(self.cfg.get("chunk_size", 30) or 30),
     )
 
-  def _resolve_low_latency_backend(self) -> tuple[str, str]:
+  def _resolve_default_asr_backend(self) -> tuple[str, str]:
     raw = str(self.cfg.get("low_latency_backend") or "").strip().lower()
-    if raw in LOW_LATENCY_BACKEND_ALLOWED:
+    if raw in ASR_BACKEND_ALLOWED:
       return raw, "configured"
-    raise RuntimeError(f"Invalid low_latency_backend configuration: {raw!r}")
+    raise RuntimeError(f"Invalid default ASR backend configuration: {raw!r}")
 
   def _transcribe_direct_faster_whisper(
     self,
@@ -174,6 +174,7 @@ class PersistentWhisperxRunner:
     language: str | None,
     initial_prompt: str | None,
     beam_size_override: int | None,
+    chunk_size_override: int | None,
   ) -> tuple[dict[str, Any], dict[str, Any]]:
     if self.asr_model is None:
       raise RuntimeError("ASR model not loaded")
@@ -185,6 +186,7 @@ class PersistentWhisperxRunner:
       "condition_on_previous_text": False,
       "vad_filter": True,
       "beam_size": int(beam_size_override if beam_size_override is not None else int(self.cfg.get("beam_size", 5) or 5)),
+      "chunk_size": int(chunk_size_override) if chunk_size_override is not None else None,
       "initial_prompt": initial_prompt,
     }
     if language is not None:
@@ -261,6 +263,8 @@ class PersistentWhisperxRunner:
       "initial_prompt_unsupported": bool(initial_prompt) and ("initial_prompt" not in call_kwargs),
       "beam_size_override_applied": (beam_size_override is not None) and ("beam_size" in call_kwargs),
       "beam_size_override_unsupported": (beam_size_override is not None) and ("beam_size" not in call_kwargs),
+      "chunk_size_override_applied": (chunk_size_override is not None) and ("chunk_size" in call_kwargs),
+      "chunk_size_override_unsupported": (chunk_size_override is not None) and ("chunk_size" not in call_kwargs),
     }
     return {"segments": segments, "language": out_language}, meta
 
@@ -516,25 +520,27 @@ class PersistentWhisperxRunner:
         beam_size_override = max(1, int(effective_options.get("beam_size")))
     except Exception:
       beam_size_override = None
+    chunk_size_override: int | None = None
+    try:
+      if effective_options.get("chunk_size") is not None:
+        chunk_size_override = max(1, int(effective_options.get("chunk_size")))
+    except Exception:
+      chunk_size_override = None
     if speaker_mode in {"none", "off", "disabled", "no_speaker", "nospeaker", "no-speaker"}:
       speaker_mode = "none"
     elif speaker_mode not in {"auto", "fixed"}:
       speaker_mode = "auto"
-    latency_mode = str(effective_options.get("latency_mode") or "default").strip().lower()
-    if latency_mode not in {"low", "default"}:
-      latency_mode = "default"
-    low_latency_mode = latency_mode == "low"
+    asr_backend_override = str(effective_options.get("asr_backend") or "").strip().lower() or None
+    if asr_backend_override not in ASR_BACKEND_ALLOWED:
+      asr_backend_override = None
     aux_sensitive_mode = bool(align_enabled) or bool(diarize_enabled and speaker_mode != "none")
-    configured_low_latency_backend, low_latency_backend_cfg_reason = self._resolve_low_latency_backend()
-    if low_latency_mode and configured_low_latency_backend == LOW_LATENCY_BACKEND_FASTER_WHISPER_DIRECT:
-      selected_low_latency_backend = LOW_LATENCY_BACKEND_FASTER_WHISPER_DIRECT
-      selected_low_latency_backend_reason = low_latency_backend_cfg_reason
-    elif low_latency_mode:
-      selected_low_latency_backend = LOW_LATENCY_BACKEND_WHISPERX
-      selected_low_latency_backend_reason = low_latency_backend_cfg_reason
+    configured_asr_backend, configured_asr_backend_reason = self._resolve_default_asr_backend()
+    if asr_backend_override is not None:
+      selected_asr_backend = str(asr_backend_override)
+      selected_asr_backend_reason = "request_override"
     else:
-      selected_low_latency_backend = LOW_LATENCY_BACKEND_WHISPERX
-      selected_low_latency_backend_reason = "latency_mode_default"
+      selected_asr_backend = str(configured_asr_backend)
+      selected_asr_backend_reason = str(configured_asr_backend_reason)
     return {
       "language": language,
       "align_enabled": align_enabled,
@@ -545,25 +551,28 @@ class PersistentWhisperxRunner:
       "diarize_model": diarize_model,
       "initial_prompt": initial_prompt,
       "beam_size_override": beam_size_override,
-      "latency_mode": latency_mode,
-      "low_latency_mode": low_latency_mode,
+      "chunk_size_override": chunk_size_override,
+      "asr_backend_override": asr_backend_override,
       "aux_sensitive_mode": aux_sensitive_mode,
-      "selected_low_latency_backend": selected_low_latency_backend,
-      "selected_low_latency_backend_reason": selected_low_latency_backend_reason,
+      "selected_asr_backend": selected_asr_backend,
+      "selected_asr_backend_reason": selected_asr_backend_reason,
     }
 
   def _prepare_transcribe_models(
     self,
     *,
     language: str | None,
-    low_latency_mode: bool,
     progress_path: Path | None,
   ) -> tuple[bool, float]:
     _write_progress(progress_path, stage="prepare")
-    model_cache_language = None if low_latency_mode else language
-    return self._ensure_asr_model(language=model_cache_language)
+    return self._ensure_asr_model(language=language)
 
-  def _build_transcribe_kwargs(self, *, language: str | None, low_latency_mode: bool) -> dict[str, Any]:
+  def _build_transcribe_kwargs(
+    self,
+    *,
+    language: str | None,
+    chunk_size_override: int | None,
+  ) -> dict[str, Any]:
     transcribe_kwargs: dict[str, Any] = {
       "batch_size": int(self.cfg.get("batch_size", 3) or 3),
       "chunk_size": int(self.cfg.get("chunk_size", 30) or 30),
@@ -572,18 +581,8 @@ class PersistentWhisperxRunner:
     }
     if language is not None:
       transcribe_kwargs["language"] = str(language)
-    if not low_latency_mode:
-      try:
-        batch_size_default_cap = int(self.cfg.get("batch_size_default_cap", 4) or 4)
-      except Exception:
-        batch_size_default_cap = 4
-      if batch_size_default_cap > 0:
-        transcribe_kwargs["batch_size"] = max(
-          1,
-          min(int(transcribe_kwargs["batch_size"]), int(batch_size_default_cap)),
-        )
-    else:
-      transcribe_kwargs["chunk_size"] = int(self.cfg.get("chunk_size_low_latency", 10) or 10)
+    if chunk_size_override is not None:
+      transcribe_kwargs["chunk_size"] = int(max(1, int(chunk_size_override)))
     return transcribe_kwargs
 
   def _apply_transcribe_overrides(
@@ -633,7 +632,7 @@ class PersistentWhisperxRunner:
     self,
     *,
     request_id: str,
-    selected_low_latency_backend: str,
+    selected_asr_backend: str,
     started_utc: str | None,
     finished_utc: str | None,
     duration_s: float | None,
@@ -647,7 +646,7 @@ class PersistentWhisperxRunner:
           "request_id": request_id,
           "backend": (
             "faster_whisper_direct"
-            if selected_low_latency_backend == LOW_LATENCY_BACKEND_FASTER_WHISPER_DIRECT
+            if selected_asr_backend == ASR_BACKEND_FASTER_WHISPER_DIRECT
             else "whisperx"
           ),
           "start_utc": str(started_utc),
@@ -670,7 +669,7 @@ class PersistentWhisperxRunner:
     t0 = time.monotonic()
     transcribe_kwargs = self._build_transcribe_kwargs(
       language=runtime_ctx["language"],
-      low_latency_mode=bool(runtime_ctx["low_latency_mode"]),
+      chunk_size_override=runtime_ctx["chunk_size_override"],
     )
     _write_progress(progress_path, stage="transcribe")
     transcribe_call_started_utc: str | None = None
@@ -681,10 +680,12 @@ class PersistentWhisperxRunner:
     initial_prompt_unsupported = False
     beam_override_applied = False
     beam_override_unsupported = False
+    chunk_size_override_applied = bool(runtime_ctx["chunk_size_override"] is not None)
+    chunk_size_override_unsupported = False
 
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
       audio_arr = whisperx.load_audio(str(request_ctx["local_path"]))
-      if runtime_ctx["selected_low_latency_backend"] == LOW_LATENCY_BACKEND_FASTER_WHISPER_DIRECT:
+      if runtime_ctx["selected_asr_backend"] == ASR_BACKEND_FASTER_WHISPER_DIRECT:
         transcribe_call_started_utc = _now_iso()
         transcribe_call_t0 = time.monotonic()
         try:
@@ -693,6 +694,7 @@ class PersistentWhisperxRunner:
             language=runtime_ctx["language"],
             initial_prompt=runtime_ctx["initial_prompt"],
             beam_size_override=runtime_ctx["beam_size_override"],
+            chunk_size_override=runtime_ctx["chunk_size_override"],
           )
         finally:
           transcribe_call_finished_utc = _now_iso()
@@ -701,6 +703,8 @@ class PersistentWhisperxRunner:
         initial_prompt_unsupported = bool(direct_backend_meta.get("initial_prompt_unsupported"))
         beam_override_applied = bool(direct_backend_meta.get("beam_size_override_applied"))
         beam_override_unsupported = bool(direct_backend_meta.get("beam_size_override_unsupported"))
+        chunk_size_override_applied = bool(direct_backend_meta.get("chunk_size_override_applied"))
+        chunk_size_override_unsupported = bool(direct_backend_meta.get("chunk_size_override_unsupported"))
       else:
         override_flags = self._apply_transcribe_overrides(
           initial_prompt=runtime_ctx["initial_prompt"],
@@ -721,7 +725,7 @@ class PersistentWhisperxRunner:
 
     self._log_transcribe_call_timing(
       request_id=str(request_ctx["request_id"]),
-      selected_low_latency_backend=str(runtime_ctx["selected_low_latency_backend"]),
+      selected_asr_backend=str(runtime_ctx["selected_asr_backend"]),
       started_utc=transcribe_call_started_utc,
       finished_utc=transcribe_call_finished_utc,
       duration_s=transcribe_call_duration_s,
@@ -736,6 +740,8 @@ class PersistentWhisperxRunner:
       "initial_prompt_unsupported": initial_prompt_unsupported,
       "beam_size_override_applied": beam_override_applied,
       "beam_size_override_unsupported": beam_override_unsupported,
+      "chunk_size_override_applied": chunk_size_override_applied,
+      "chunk_size_override_unsupported": chunk_size_override_unsupported,
       "transcribe_s": round(max(0.0, float(time.monotonic() - t0)), 6),
       "transcribe_call_s": transcribe_call_duration_s,
     }
@@ -896,24 +902,30 @@ class PersistentWhisperxRunner:
     runtime = {
       "backend": (
         "faster_whisper_direct"
-        if runtime_ctx["selected_low_latency_backend"] == LOW_LATENCY_BACKEND_FASTER_WHISPER_DIRECT
+        if runtime_ctx["selected_asr_backend"] == ASR_BACKEND_FASTER_WHISPER_DIRECT
         else "whisperx"
       ),
       "runner_kind": "persistent_local",
       "runner_reused": bool(phase_ctx["model_reused"]),
       "device": str(self.cfg.get("device") or ""),
       "model": str(self.cfg.get("model") or ""),
-      "latency_mode": str(runtime_ctx["latency_mode"]),
-      "low_latency_backend_selected": str(runtime_ctx["selected_low_latency_backend"]),
-      "low_latency_backend_reason": str(runtime_ctx["selected_low_latency_backend_reason"]),
+      "asr_backend_selected": str(runtime_ctx["selected_asr_backend"]),
+      "asr_backend_reason": str(runtime_ctx["selected_asr_backend_reason"]),
       "segments_returned_count": int(segments_returned_count),
       "effective_batch_size": int(phase_ctx["transcribe_kwargs"].get("batch_size") or 0),
+      "effective_chunk_size": int(phase_ctx["transcribe_kwargs"].get("chunk_size") or 0),
       "diarize_applied": bool(phase_ctx["diarize_applied"]),
       "initial_prompt_applied": bool(phase_ctx["initial_prompt_applied"]),
       "beam_size_override_applied": bool(phase_ctx["beam_size_override_applied"]),
+      "chunk_size_override_applied": bool(phase_ctx["chunk_size_override_applied"]),
       "beam_size_override": (
         int(runtime_ctx["beam_size_override"])
         if runtime_ctx["beam_size_override"] is not None
+        else None
+      ),
+      "chunk_size_override": (
+        int(runtime_ctx["chunk_size_override"])
+        if runtime_ctx["chunk_size_override"] is not None
         else None
       ),
     }
@@ -931,8 +943,10 @@ class PersistentWhisperxRunner:
       warnings.append("initial_prompt_unsupported_by_asr_pipeline")
     if bool(phase_ctx["beam_size_override_unsupported"]):
       warnings.append("beam_size_override_unsupported_by_asr_pipeline")
-    if runtime_ctx["selected_low_latency_backend"] == LOW_LATENCY_BACKEND_FASTER_WHISPER_DIRECT:
-      warnings.append("low_latency_backend_faster_whisper_direct_experimental")
+    if bool(phase_ctx["chunk_size_override_unsupported"]):
+      warnings.append("chunk_size_override_unsupported_by_asr_pipeline")
+    if runtime_ctx["selected_asr_backend"] == ASR_BACKEND_FASTER_WHISPER_DIRECT:
+      warnings.append("asr_backend_faster_whisper_direct_experimental")
 
     return {
       "schema_version": ASR_SCHEMA_VERSION,
@@ -971,7 +985,6 @@ class PersistentWhisperxRunner:
 
       model_reused, prepare_s = self._prepare_transcribe_models(
         language=runtime_ctx["language"],
-        low_latency_mode=bool(runtime_ctx["low_latency_mode"]),
         progress_path=progress_path,
       )
       timings["prepare_s"] = round(float(prepare_s), 6)
@@ -1018,6 +1031,8 @@ class PersistentWhisperxRunner:
         "initial_prompt_unsupported": bool(transcribe_phase["initial_prompt_unsupported"]),
         "beam_size_override_applied": bool(transcribe_phase["beam_size_override_applied"]),
         "beam_size_override_unsupported": bool(transcribe_phase["beam_size_override_unsupported"]),
+        "chunk_size_override_applied": bool(transcribe_phase["chunk_size_override_applied"]),
+        "chunk_size_override_unsupported": bool(transcribe_phase["chunk_size_override_unsupported"]),
         "aligner_reused": alignment_phase["aligner_reused"],
         "align_skipped_missing_language": bool(alignment_phase["align_skipped_missing_language"]),
         "diarize_applied": bool(diarize_phase["diarize_applied"]),
