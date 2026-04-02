@@ -43,17 +43,32 @@ def _read_json(path: Path) -> dict[str, Any]:
   return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _write_progress(progress_path: Path | None, *, stage: str) -> None:
+def _normalize_progress_timings(timings: dict[str, Any] | None) -> dict[str, float]:
+  out: dict[str, float] = {}
+  for raw_key, raw_value in dict(timings or {}).items():
+    key = str(raw_key or "").strip()
+    if not key:
+      continue
+    try:
+      sec = max(0.0, float(raw_value))
+    except Exception:
+      continue
+    out[key] = round(sec, 6)
+  return out
+
+
+def _write_progress(progress_path: Path | None, *, stage: str, timings: dict[str, Any] | None = None) -> None:
   if progress_path is None:
     return
   try:
-    _write_json_atomic(
-      progress_path,
-      {
-        "stage": str(stage or "").strip().lower(),
-        "ts_utc": _now_iso(),
-      },
-    )
+    payload = {
+      "stage": str(stage or "").strip().lower(),
+      "ts_utc": _now_iso(),
+    }
+    safe_timings = _normalize_progress_timings(timings)
+    if safe_timings:
+      payload["timings"] = safe_timings
+    _write_json_atomic(progress_path, payload)
   except Exception:
     pass
 
@@ -681,13 +696,14 @@ class PersistentWhisperxRunner:
     request_ctx: dict[str, Any],
     runtime_ctx: dict[str, Any],
     progress_path: Path | None,
+    completed_timings: dict[str, Any] | None,
   ) -> dict[str, Any]:
     t0 = time.monotonic()
     transcribe_kwargs = self._build_transcribe_kwargs(
       language=runtime_ctx["language"],
       chunk_size_override=runtime_ctx["chunk_size_override"],
     )
-    _write_progress(progress_path, stage="transcribe")
+    _write_progress(progress_path, stage="transcribe", timings=completed_timings)
     transcribe_call_started_utc: str | None = None
     transcribe_call_finished_utc: str | None = None
     transcribe_call_duration_s: float | None = None
@@ -771,6 +787,7 @@ class PersistentWhisperxRunner:
     audio_arr: Any,
     runtime_ctx: dict[str, Any],
     progress_path: Path | None,
+    completed_timings: dict[str, Any] | None,
   ) -> dict[str, Any]:
     t0 = time.monotonic()
     align_language = _normalize_optional_language(result.get("language"))
@@ -781,7 +798,7 @@ class PersistentWhisperxRunner:
     align_skipped_missing_language = False
 
     if bool(runtime_ctx["align_enabled"]) and align_language is not None:
-      _write_progress(progress_path, stage="align")
+      _write_progress(progress_path, stage="align", timings=completed_timings)
       aligner, align_meta, aligner_reused, aligner_load_s = self._ensure_aligner(language=align_language)
       with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         if aligner is not None and len(result.get("segments") or []) > 0:
@@ -821,6 +838,7 @@ class PersistentWhisperxRunner:
     local_path: Path,
     runtime_ctx: dict[str, Any],
     progress_path: Path | None,
+    completed_timings: dict[str, Any] | None,
   ) -> dict[str, Any]:
     diarize_applied = False
     diarizer_reused: bool | None = None
@@ -828,7 +846,7 @@ class PersistentWhisperxRunner:
     t0 = time.monotonic()
 
     if bool(runtime_ctx["diarize_enabled"]) and str(runtime_ctx["speaker_mode"]) != "none":
-      _write_progress(progress_path, stage="diarize")
+      _write_progress(progress_path, stage="diarize", timings=completed_timings)
       diarize_kwargs: dict[str, Any] = {}
       if str(runtime_ctx["speaker_mode"]) == "fixed":
         if runtime_ctx["min_speakers"] is not None:
@@ -873,7 +891,7 @@ class PersistentWhisperxRunner:
     t_total: float,
     progress_path: Path | None,
   ) -> dict[str, Any]:
-    _write_progress(progress_path, stage="finalize")
+    _write_progress(progress_path, stage="finalize", timings=timings)
     t0 = time.monotonic()
     out_dir = request_ctx["out_dir"]
     local_path = request_ctx["local_path"]
@@ -1010,6 +1028,7 @@ class PersistentWhisperxRunner:
         request_ctx=request_ctx,
         runtime_ctx=runtime_ctx,
         progress_path=progress_path,
+        completed_timings=timings,
       )
       timings["transcribe_s"] = float(transcribe_phase["transcribe_s"])
       if transcribe_phase["transcribe_call_s"] is not None:
@@ -1021,6 +1040,7 @@ class PersistentWhisperxRunner:
         audio_arr=transcribe_phase["audio_arr"],
         runtime_ctx=runtime_ctx,
         progress_path=progress_path,
+        completed_timings=timings,
       )
       timings["align_s"] = float(alignment_phase["align_s"])
       if "aligner_load_s" in alignment_phase:
@@ -1032,6 +1052,7 @@ class PersistentWhisperxRunner:
         local_path=request_ctx["local_path"],
         runtime_ctx=runtime_ctx,
         progress_path=progress_path,
+        completed_timings=timings,
       )
       timings["diarize_s"] = float(diarize_phase["diarize_s"])
       if "diarizer_load_s" in diarize_phase:
@@ -1064,7 +1085,7 @@ class PersistentWhisperxRunner:
         progress_path=progress_path,
       )
     finally:
-      _write_progress(progress_path, stage="done")
+      _write_progress(progress_path, stage="done", timings=timings)
       if aux_sensitive_mode:
         # Keep inter-request VRAM baseline low when auxiliary models are used.
         self._release_aux_models()

@@ -48,6 +48,20 @@ def _seconds_between_utc(start_utc: str | None, end_utc: str | None) -> float | 
         return None
 
 
+def _normalize_progress_timings(raw: Any) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for raw_key, raw_value in dict(raw or {}).items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        try:
+            sec = max(0.0, float(raw_value))
+        except Exception:
+            continue
+        out[key] = round(sec, 6)
+    return out
+
+
 class AsrPoolService:
     def __init__(self) -> None:
         self._runner_slots = get_int("scheduler.runner_slots", 2, min_value=1)
@@ -554,6 +568,7 @@ class AsrPoolService:
                         "started_at_utc": rec.started_at_utc,
                         "finished_at_utc": rec.finished_at_utc,
                         "queue_position": self._to_lifecycle(rec).get("queue_position"),
+                        "timings": dict(rec.timings or {}),
                     }
                 )
             return 200, {
@@ -785,12 +800,18 @@ class AsrPoolService:
                 obj = json.loads(progress_path.read_text(encoding="utf-8")) if progress_path.exists() else {}
                 stage = str(obj.get("stage") or "").strip().lower()
                 stage_ts = str(obj.get("ts_utc") or "").strip()
-                if stage and stage != last_stage:
-                    async with self._lock:
-                        rec = self._record_store.get(str(request_id))
-                        if rec is not None and rec.state in {"running", "cancel_requested"}:
+                progress_timings = _normalize_progress_timings(obj.get("timings"))
+                stage_changed = False
+                async with self._lock:
+                    rec = self._record_store.get(str(request_id))
+                    if rec is not None and rec.state in {"running", "cancel_requested"}:
+                        if progress_timings:
+                            rec.timings = dict(progress_timings)
+                        if stage and stage != last_stage:
                             rec.stage = str(stage)
                             rec.stage_started_at_utc = str(stage_ts or _iso_utc())
+                            stage_changed = True
+                if stage_changed:
                     self._emit_event(
                         "request_stage",
                         request_id=str(request_id),

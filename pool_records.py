@@ -9,6 +9,20 @@ from typing import Any
 from pool_helpers import _iso_utc, _parse_utc_unix, _safe_token
 
 
+def _clean_timings(raw: Any) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for raw_key, raw_value in dict(raw or {}).items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        try:
+            sec = max(0.0, float(raw_value))
+        except Exception:
+            continue
+        out[key] = round(sec, 6)
+    return out
+
+
 @dataclass
 class PoolRecord:
     request_id: str
@@ -22,6 +36,7 @@ class PoolRecord:
     finished_at_utc: str | None = None
     stage: str | None = None
     stage_started_at_utc: str | None = None
+    timings: dict[str, float] | None = None
     retryable: bool | None = None
     response: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
@@ -82,6 +97,9 @@ class PoolRecordStore:
         rec.response = dict(response or {}) if response is not None else None
         rec.error = dict(error or {}) if error is not None else None
         rec.retryable = retryable
+        response_timings = _clean_timings((rec.response or {}).get("timings"))
+        if response_timings:
+            rec.timings = response_timings
 
     def to_lifecycle(self, rec: PoolRecord, *, queue_position: int | None) -> dict[str, Any]:
         return {
@@ -99,6 +117,7 @@ class PoolRecordStore:
             "finished_at_utc": rec.finished_at_utc,
             "stage": rec.stage,
             "stage_started_at_utc": rec.stage_started_at_utc,
+            "timings": dict(rec.timings or {}),
             "retryable": rec.retryable,
             "response": rec.response,
             "error": rec.error,
