@@ -13,6 +13,21 @@ completions, and artifact retrieval for client applications.
 - supports both point-in-time status reads and streaming completion delivery
 - exposes pool status and observability endpoints for operators
 
+## Use Cases
+
+For developers building on top of `asr-pool`:
+
+- Client application integration:
+  Build a higher-level client around request submission, progress reads, completion streams, and artifact retrieval.
+
+Possible end-user applications:
+
+- Live recording transcription:
+  Submit short audio chunks from an ongoing recording and consume streaming completions to keep the transcript up to date while recording continues.
+
+- File-based transcription:
+  Submit one file or many files, check progress as requests run, and fetch the generated transcriptions when requests complete.
+
 ## Runtime Model
 
 `asr-pool` combines four concerns in one standalone service:
@@ -144,9 +159,3 @@ After submission, clients typically use one or more of these read paths:
   streams completion events as they happen
 - `GET /asr/v1/requests/{request_id}/artifacts/srt`
   returns the generated SRT artifact after completion
-
-This split lets clients choose the right integration style:
-
-- polling for UI progress
-- streaming for terminal wakeups
-- artifact fetch for final outputs
