@@ -2,26 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-from asr_contract import AsrRequestError, build_error_response, prepare_request
-from pool_completions import PoolCompletionFeed
-from pool_config import get_bool, get_float, get_int, get_str
-from pool_helpers import _iso_utc, _parse_utc_unix, _safe_token
-from pool_records import PoolRecord, PoolRecordStore
-from pool_scheduler import PoolScheduler
+from app.asr.contract import AsrRequestError, build_error_response, prepare_request
+from app.config import get_bool, get_float, get_int, get_str
+from app.pool.completions import PoolCompletionFeed
+from app.pool.records import PoolRecord, PoolRecordStore
+from app.pool.scheduler import PoolScheduler
+from app.util import _iso_utc, _parse_utc_unix, _safe_token
 
 try:
-    from whisperx_runner_client import _AsrPoolWarmRunnerClient
+    from app.whisperx.client import _AsrPoolWarmRunnerClient
 except Exception:  # pragma: no cover - runtime import failure is handled by empty warm client pool.
     _AsrPoolWarmRunnerClient = None  # type: ignore[assignment]
 
@@ -30,7 +25,7 @@ INTERACTIVE_DEFAULT_FAIRNESS_KEY = "__interactive_default__"
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def _json_hash(obj: Any) -> str:
@@ -166,11 +161,12 @@ class AsrPoolService:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        for client in list(self._warm_clients):
-            try:
-                client.shutdown(reason="pool_shutdown")
-            except Exception:
-                continue
+        shutdown_tasks = [
+            asyncio.to_thread(client.shutdown, reason="pool_shutdown", force_kill=True)
+            for client in list(self._warm_clients)
+        ]
+        if shutdown_tasks:
+            await asyncio.gather(*shutdown_tasks, return_exceptions=True)
         self._emit_event("pool_stopped")
 
     async def _prewarm_runners(self) -> None:

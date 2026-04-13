@@ -159,3 +159,12 @@ After submission, clients typically use one or more of these read paths:
   streams completion events as they happen
 - `GET /asr/v1/requests/{request_id}/artifacts/srt`
   returns the generated SRT artifact after completion
+
+## Acknowledgments
+
+This pool builds on a number of excellent upstream projects:
+
+- FastAPI
+- Uvicorn
+- WhisperX
+- PyTorch

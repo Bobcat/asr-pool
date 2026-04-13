@@ -4,7 +4,8 @@ Description=ASR Pool (Uvicorn)
 [Service]
 Type=simple
 WorkingDirectory=%h/projects/asr-pool
-ExecStart=%h/projects/asr-pool/.venv/bin/python3 -m uvicorn main:app --host 127.0.0.1 --port 18090
+ExecStart=%h/projects/asr-pool/.venv/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 18090 --timeout-graceful-shutdown 0
+KillMode=mixed
 Restart=always
 RestartSec=2
 EnvironmentFile=-%h/.config/asr-pool/asr-pool.env

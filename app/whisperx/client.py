@@ -3,24 +3,19 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from whisperx_runner_env import (
+from app.config import get_bool, get_float, get_setting
+from app.whisperx.env import (
   _build_runner_env,
   _load_server_config,
   _normalize_optional_language,
   _resolve_whisperx_python,
 )
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-  sys.path.insert(0, str(_REPO_ROOT))
-
-from pool_config import get_bool, get_float, get_setting
 
 
 
@@ -109,24 +104,21 @@ class _AsrPoolWarmRunnerClient:
         )
       self._last_used_t = time.monotonic()
 
-  def _server_script(self) -> Path:
-    return Path(__file__).with_name("whisperx_runner_server.py")
+  def _server_module(self) -> str:
+    return "app.whisperx.server"
 
   def _spawn_locked(self, cfg: dict[str, Any]) -> None:
     self._shutdown_locked(reason="respawn")
 
     env, _site_packages, _nvidia_lib_dirs = _build_runner_env(cfg)
     runner_python = _resolve_whisperx_python(cfg)
-    server_script = self._server_script()
-    if not server_script.exists():
-      raise PersistentRunnerClientError(f"Missing persistent server script: {server_script}")
 
     init_dir = Path("/tmp") / "transcribe_asr_pool_runner"
     init_dir.mkdir(parents=True, exist_ok=True)
     init_path = init_dir / f"init_{os.getpid()}_{uuid.uuid4().hex}.json"
     init_path.write_text(json.dumps({"cfg": cfg}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    cmd = [str(runner_python), str(server_script), "--init-json", str(init_path)]
+    cmd = [str(runner_python), "-m", self._server_module(), "--init-json", str(init_path)]
     proc = subprocess.Popen(
       cmd,
       stdin=subprocess.PIPE,
@@ -158,7 +150,7 @@ class _AsrPoolWarmRunnerClient:
       return
     self._spawn_locked(cfg)
 
-  def _shutdown_locked(self, *, reason: str) -> None:
+  def _shutdown_locked(self, *, reason: str, force_kill: bool = False) -> None:
     proc = self._proc
     self._proc = None
     self._cfg_fingerprint = None
@@ -167,29 +159,40 @@ class _AsrPoolWarmRunnerClient:
     self._server_init_path = None
     if proc is not None:
       pid = proc.pid
-      try:
-        if proc.poll() is None and proc.stdin is not None:
-          try:
-            proc.stdin.write(json.dumps({"cmd": "shutdown", "reason": reason}) + "\n")
-            proc.stdin.flush()
-          except Exception:
-            pass
-      except Exception:
-        pass
-      try:
-        proc.wait(timeout=1.0)
-      except Exception:
+      if force_kill:
         try:
-          proc.terminate()
+          if proc.poll() is None:
+            proc.kill()
         except Exception:
           pass
         try:
-          proc.wait(timeout=2.0)
+          proc.wait(timeout=1.0)
+        except Exception:
+          pass
+      else:
+        try:
+          if proc.poll() is None and proc.stdin is not None:
+            try:
+              proc.stdin.write(json.dumps({"cmd": "shutdown", "reason": reason}) + "\n")
+              proc.stdin.flush()
+            except Exception:
+              pass
+        except Exception:
+          pass
+        try:
+          proc.wait(timeout=1.0)
         except Exception:
           try:
-            proc.kill()
+            proc.terminate()
           except Exception:
             pass
+          try:
+            proc.wait(timeout=2.0)
+          except Exception:
+            try:
+              proc.kill()
+            except Exception:
+              pass
       _log(f"stopped pid={pid} reason={reason}")
     if init_path is not None:
       try:
@@ -197,9 +200,9 @@ class _AsrPoolWarmRunnerClient:
       except Exception:
         pass
 
-  def shutdown(self, *, reason: str = "manual") -> None:
+  def shutdown(self, *, reason: str = "manual", force_kill: bool = False) -> None:
     with self._lock:
-      self._shutdown_locked(reason=reason)
+      self._shutdown_locked(reason=reason, force_kill=force_kill)
 
   def transcribe(self, *, job: Any, request: dict[str, Any], progress_path: Path | None = None) -> dict[str, Any]:
     request_timeout_s = max(1.0, get_float("warm_runner.request_timeout_s", 120.0, min_value=0.0))

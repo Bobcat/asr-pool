@@ -14,9 +14,9 @@ from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
-from asr_schema import ASR_SCHEMA_VERSION
-from whisperx_runner_env import _normalize_optional_language
-from whisperx_runner_imports import _apply_torch_thread_tuning, _as_positive_int, _cleanup_torch
+from app.asr.schema import ASR_SCHEMA_VERSION
+from app.whisperx.env import _normalize_optional_language
+from app.whisperx.imports import _apply_torch_thread_tuning, _as_positive_int, _cleanup_torch
 
 
 ASR_BACKEND_WHISPERX = "whisperx"

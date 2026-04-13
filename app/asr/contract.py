@@ -1,16 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import sys
-from pathlib import Path
 from typing import Any
 
-from asr_options import AsrOptionsError, normalize_options
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-  sys.path.insert(0, str(_REPO_ROOT))
-
-from asr_schema import (
+from app.asr.options import AsrOptionsError, normalize_options
+from app.asr.schema import (
   ASR_SCHEMA_VERSION,
 )
 

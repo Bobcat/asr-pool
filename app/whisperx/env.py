@@ -5,11 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-  sys.path.insert(0, str(_REPO_ROOT))
-
-from pool_config import get_int, get_setting, get_str
+from app.config import get_int, get_setting, get_str
 
 WHISPERX_ENV_FILE = Path.home() / ".config" / "whisperx" / "env"
 DEFAULT_WHISPERX_VENV = Path.home() / "whisperx" / ".venv"
@@ -20,6 +16,7 @@ def _normalize_optional_language(value: Any) -> str | None:
     return None
   text = str(value).strip()
   return text or None
+
 
 def _load_server_config() -> dict[str, Any]:
   cfg: dict[str, Any] = {

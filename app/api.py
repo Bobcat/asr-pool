@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from email.parser import BytesParser
 from email.policy import default as email_policy_default
 from pathlib import Path
@@ -10,9 +11,9 @@ from typing import Any
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
-from pool_config import get_float, get_str
-from pool_helpers import _iso_utc, _safe_token
-from pool_service import AsrPoolService
+from app.config import get_float, get_str
+from app.pool.service import AsrPoolService
+from app.util import _iso_utc, _safe_token
 
 
 ROOT_PATH = get_str("api.root_path", "")
@@ -370,6 +371,7 @@ async def get_asr_completions(
 
 @app.get("/asr/v1/completions/stream")
 async def stream_asr_completions(
+    request: Request,
     consumer_id: str = Query(default=""),
     since_seq: int = Query(default=0),
     limit: int = Query(default=100),
@@ -391,14 +393,20 @@ async def stream_asr_completions(
         since_local = int(safe_since_seq)
         last_feed_id = ""
         first_meta = True
+        next_heartbeat_deadline = time.monotonic() + float(safe_heartbeat_s)
         try:
             while True:
+                if await request.is_disconnected():
+                    return
+                remaining_heartbeat_s = max(0.0, float(next_heartbeat_deadline - time.monotonic()))
                 status_code, body = await POOL.completions_wait(
                     consumer_id=cid,
                     since_seq=since_local,
                     limit=safe_limit,
-                    wait_timeout_s=safe_heartbeat_s,
+                    wait_timeout_s=min(1.0, remaining_heartbeat_s) if remaining_heartbeat_s > 0.0 else 0.0,
                 )
+                if await request.is_disconnected():
+                    return
                 if int(status_code) != 200:
                     yield _sse_json_event(
                         event="error",
@@ -413,6 +421,8 @@ async def stream_asr_completions(
                 else:
                     next_seq = max(0, int(next_seq_raw))
                 if first_meta or (feed_id and feed_id != last_feed_id):
+                    if await request.is_disconnected():
+                        return
                     yield _sse_json_event(
                         event="meta",
                         data={
@@ -431,6 +441,8 @@ async def stream_asr_completions(
                 for row in (body.get("events") or []):
                     if not isinstance(row, dict):
                         continue
+                    if await request.is_disconnected():
+                        return
                     seq = max(0, int(row.get("seq") or 0))
                     yield _sse_json_event(
                         event="completion",
@@ -440,7 +452,16 @@ async def stream_asr_completions(
                     emitted_completion = True
                 since_local = int(next_seq)
 
+                if emitted_completion:
+                    next_heartbeat_deadline = time.monotonic() + float(safe_heartbeat_s)
+                    continue
+
+                if time.monotonic() < float(next_heartbeat_deadline):
+                    continue
+
                 if not emitted_completion:
+                    if await request.is_disconnected():
+                        return
                     yield _sse_json_event(
                         event="heartbeat",
                         data={
@@ -450,6 +471,7 @@ async def stream_asr_completions(
                         },
                         event_id=str(since_local),
                     )
+                    next_heartbeat_deadline = time.monotonic() + float(safe_heartbeat_s)
         except asyncio.CancelledError:
             return
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pool_helpers import _iso_utc, _parse_utc_unix, _safe_token
+from app.util import _iso_utc, _parse_utc_unix, _safe_token
 
 
 def _clean_timings(raw: Any) -> dict[str, float]:
