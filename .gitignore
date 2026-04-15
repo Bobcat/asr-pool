@@ -10,3 +10,4 @@ config/local.json
 deploy/env/*.env
 !deploy/env/*.env.example
 AGENTS.md
+*.code-workspace
