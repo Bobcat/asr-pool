@@ -1,0 +1,14 @@
+[Unit]
+Description=ASR Pool Dev (Uvicorn)
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/asr-pool-dev
+ExecStart=%h/projects/asr-pool-dev/.venv/bin/python3 -m uvicorn app.main:app --host 127.0.0.1 --port 18090 --timeout-graceful-shutdown 0
+KillMode=mixed
+Restart=always
+RestartSec=2
+EnvironmentFile=-%h/.config/asr-pool-dev/dev.env
+
+[Install]
+WantedBy=default.target
