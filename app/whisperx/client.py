@@ -119,11 +119,12 @@ class _AsrPoolWarmRunnerClient:
     init_path.write_text(json.dumps({"cfg": cfg}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     cmd = [str(runner_python), "-m", self._server_module(), "--init-json", str(init_path)]
+    debug_runner_logs = get_bool("whisperx.debug.log_transcribe_call_params", False)
     proc = subprocess.Popen(
       cmd,
       stdin=subprocess.PIPE,
-      stdout=subprocess.DEVNULL,
-      stderr=subprocess.DEVNULL,
+      stdout=(None if debug_runner_logs else subprocess.DEVNULL),
+      stderr=(None if debug_runner_logs else subprocess.DEVNULL),
       text=True,
       bufsize=1,
       universal_newlines=True,
