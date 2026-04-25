@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.asr.schema import ASR_SCHEMA_VERSION
+from app.config import get_bool
 from app.whisperx.env import _normalize_optional_language
 from app.whisperx.io import _now_iso, _write_progress
 
@@ -320,6 +321,33 @@ def _log_transcribe_call_timing(
   )
 
 
+def _log_whisperx_transcribe_call_params(
+  *,
+  request_id: str,
+  audio_path: Path,
+  transcribe_kwargs: dict[str, Any],
+  initial_prompt: str | None,
+  beam_size_override: int | None,
+) -> None:
+  if not get_bool("whisperx.debug.log_transcribe_call_params", False):
+    return
+  print(
+    "ASR_WHISPERX_TRANSCRIBE_CALL "
+    + json.dumps(
+      {
+        "request_id": str(request_id),
+        "audio_path": str(audio_path),
+        "transcribe_kwargs": dict(transcribe_kwargs or {}),
+        "initial_prompt": initial_prompt,
+        "beam_size_override": beam_size_override,
+      },
+      ensure_ascii=False,
+      sort_keys=True,
+    ),
+    flush=True,
+  )
+
+
 def _run_transcribe_phase(
   runner: Any,
   *,
@@ -346,6 +374,15 @@ def _run_transcribe_phase(
   beam_override_unsupported = False
   chunk_size_override_applied = bool(runtime_ctx["chunk_size_override"] is not None)
   chunk_size_override_unsupported = False
+
+  if runtime_ctx["selected_asr_backend"] == ASR_BACKEND_WHISPERX:
+    _log_whisperx_transcribe_call_params(
+      request_id=str(request_ctx["request_id"]),
+      audio_path=request_ctx["local_path"],
+      transcribe_kwargs=transcribe_kwargs,
+      initial_prompt=runtime_ctx["initial_prompt"],
+      beam_size_override=runtime_ctx["beam_size_override"],
+    )
 
   with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
     audio_arr = whisperx.load_audio(str(request_ctx["local_path"]))

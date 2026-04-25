@@ -62,6 +62,9 @@
     "low_latency": {
       "backend": "whisperx"
     },
+    "debug": {
+      "log_transcribe_call_params": false
+    },
     "beam_size": 5,
     "align_model": "",
     "diarize_model": "",
