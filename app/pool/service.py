@@ -57,6 +57,13 @@ def _normalize_progress_timings(raw: Any) -> dict[str, float]:
     return out
 
 
+def _timing_value(raw: Any) -> float | None:
+    try:
+        return max(0.0, float(raw))
+    except Exception:
+        return None
+
+
 class AsrPoolService:
     def __init__(self) -> None:
         self._runner_slots = get_int("scheduler.runner_slots", 2, min_value=1)
@@ -296,6 +303,8 @@ class AsrPoolService:
             raise RuntimeError(f"slot={slot_idx}: {type(e).__name__}: {e}") from e
 
     async def submit(self, raw_payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        raw_payload = dict(raw_payload or {})
+        pool_internal = dict(raw_payload.pop("_pool_internal", {}) or {})
         try:
             prepared = prepare_request(raw_payload)
         except AsrRequestError as e:
@@ -319,6 +328,8 @@ class AsrPoolService:
         fairness_key, slot_affinity_requested, slot_affinity_effective = self._extract_routing_metadata(prepared)
         if not fairness_key:
             fairness_key = INTERACTIVE_DEFAULT_FAIRNESS_KEY
+        ingest_started_at_utc = str(pool_internal.get("ingest_started_at_utc") or "").strip() or _iso_utc()
+        ingest_started_mono = _timing_value(pool_internal.get("ingest_started_mono"))
 
         async with self._lock:
             self._maybe_prune_records_unlocked(reason="submit", force=False)
@@ -362,6 +373,7 @@ class AsrPoolService:
                     },
                 }
 
+            submitted_mono = time.monotonic()
             rec = PoolRecord(
                 request_id=request_id,
                 payload_hash=payload_hash,
@@ -369,7 +381,10 @@ class AsrPoolService:
                 priority=priority,
                 queue_key=queue_key,
                 state="queued",
+                ingest_started_at_utc=ingest_started_at_utc,
                 submitted_at_utc=_iso_utc(),
+                ingest_started_mono=ingest_started_mono,
+                submitted_mono=round(float(submitted_mono), 6),
                 consumer_id=consumer_id,
                 fairness_key=str(fairness_key or ""),
                 slot_affinity_requested=(None if slot_affinity_requested is None else int(slot_affinity_requested)),
@@ -560,6 +575,7 @@ class AsrPoolService:
                         "state": str(rec.state),
                         "stage": str(rec.stage or ""),
                         "stage_started_at_utc": rec.stage_started_at_utc,
+                        "ingest_started_at_utc": rec.ingest_started_at_utc,
                         "submitted_at_utc": rec.submitted_at_utc,
                         "started_at_utc": rec.started_at_utc,
                         "finished_at_utc": rec.finished_at_utc,
@@ -772,7 +788,38 @@ class AsrPoolService:
             stage=stage,
             retryable=retryable,
         )
+        self._augment_terminal_timings_unlocked(rec)
         self._append_completion_event_unlocked(rec)
+
+    def _augment_terminal_timings_unlocked(self, rec: PoolRecord) -> None:
+        timings = dict(rec.timings or {})
+        pool_ingest_s = None
+        if rec.ingest_started_mono is not None and rec.submitted_mono is not None:
+            pool_ingest_s = max(0.0, float(rec.submitted_mono) - float(rec.ingest_started_mono))
+        if pool_ingest_s is not None:
+            timings["pool_ingest_s"] = round(float(pool_ingest_s), 6)
+
+        pool_queue_wait_s = None
+        if rec.submitted_mono is not None and rec.started_mono is not None:
+            pool_queue_wait_s = max(0.0, float(rec.started_mono) - float(rec.submitted_mono))
+        if pool_queue_wait_s is not None:
+            timings["pool_queue_wait_s"] = round(float(pool_queue_wait_s), 6)
+
+        pool_wall_s = None
+        if rec.ingest_started_mono is not None and rec.finished_mono is not None:
+            pool_wall_s = max(0.0, float(rec.finished_mono) - float(rec.ingest_started_mono))
+        if pool_wall_s is not None:
+            timings["pool_wall_s"] = round(float(pool_wall_s), 6)
+
+        runner_wall_s = _timing_value(timings.get("total_s"))
+        if pool_wall_s is not None and runner_wall_s is not None:
+            timings["pool_outside_runner_s"] = round(max(0.0, float(pool_wall_s) - float(runner_wall_s)), 6)
+
+        rec.timings = timings
+        if isinstance(rec.response, dict):
+            response_timings = dict(rec.response.get("timings") or {})
+            response_timings.update(timings)
+            rec.response["timings"] = response_timings
 
     def _to_lifecycle(self, rec: PoolRecord) -> dict[str, Any]:
         return self._record_store.to_lifecycle(rec, queue_position=self._scheduler.queue_position(rec))
@@ -789,6 +836,7 @@ class AsrPoolService:
 
     async def _poll_stage_updates(self, *, request_id: str, progress_path: Path, stop_event: asyncio.Event) -> None:
         last_stage = ""
+        poll_interval_s = float(self._stage_poll_interval_s)
         while True:
             if stop_event.is_set():
                 break
@@ -816,7 +864,11 @@ class AsrPoolService:
                     last_stage = str(stage)
             except Exception:
                 pass
-            await asyncio.sleep(float(self._stage_poll_interval_s))
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=poll_interval_s)
+                break
+            except asyncio.TimeoutError:
+                pass
 
     async def _dequeue_next_request_id(self, slot_idx: int) -> tuple[str, dict[str, Any], int]:
         async with self._cond:
@@ -832,11 +884,14 @@ class AsrPoolService:
                         continue
                     rec.state = "running"
                     rec.started_at_utc = _iso_utc()
+                    rec.started_mono = round(float(time.monotonic()), 6)
                     rec.stage = "dispatch"
                     rec.stage_started_at_utc = rec.started_at_utc
                     request = dict(rec.request)
                     timeout_s = int(self._timeouts_s.get(rec.priority, 120))
-                    queue_wait_s = _seconds_between_utc(rec.submitted_at_utc, rec.started_at_utc)
+                    queue_wait_s = None
+                    if rec.submitted_mono is not None and rec.started_mono is not None:
+                        queue_wait_s = max(0.0, float(rec.started_mono) - float(rec.submitted_mono))
                     self._emit_event(
                         "request_started",
                         request_id=rec.request_id,
@@ -896,11 +951,19 @@ class AsrPoolService:
                     details={"exc_type": type(e).__name__},
                 )
             finally:
+                t_stage_poller_join = time.monotonic()
                 stage_stop.set()
                 try:
                     await stage_task
                 except Exception:
                     pass
+                if isinstance(response, dict):
+                    response_timings = dict(response.get("timings") or {})
+                    response_timings["pool_stage_poller_join_s"] = round(
+                        max(0.0, float(time.monotonic() - t_stage_poller_join)),
+                        6,
+                    )
+                    response["timings"] = response_timings
 
             ok = bool(response.get("ok", False))
             async with self._lock:
@@ -927,7 +990,9 @@ class AsrPoolService:
                     )
                 runtime_meta = dict((rec2.response or {}).get("runtime") or {})
                 err = dict(rec2.error or {})
-                exec_s = _seconds_between_utc(rec2.started_at_utc, rec2.finished_at_utc)
+                exec_s = None
+                if rec2.started_mono is not None and rec2.finished_mono is not None:
+                    exec_s = max(0.0, float(rec2.finished_mono) - float(rec2.started_mono))
                 self._emit_event(
                     "request_finished",
                     request_id=rec2.request_id,

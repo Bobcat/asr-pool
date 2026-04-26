@@ -32,8 +32,13 @@ class PoolRecord:
     queue_key: str
     state: str
     submitted_at_utc: str
+    ingest_started_at_utc: str | None = None
+    ingest_started_mono: float | None = None
+    submitted_mono: float | None = None
     started_at_utc: str | None = None
+    started_mono: float | None = None
     finished_at_utc: str | None = None
+    finished_mono: float | None = None
     stage: str | None = None
     stage_started_at_utc: str | None = None
     timings: dict[str, float] | None = None
@@ -92,6 +97,7 @@ class PoolRecordStore:
     ) -> None:
         rec.state = str(state)
         rec.finished_at_utc = _iso_utc(None)
+        rec.finished_mono = time.monotonic()
         rec.stage = str(stage or state)
         rec.stage_started_at_utc = rec.finished_at_utc
         rec.response = dict(response or {}) if response is not None else None
@@ -112,6 +118,7 @@ class PoolRecordStore:
             "slot_affinity_requested": rec.slot_affinity_requested,
             "slot_affinity_effective": rec.slot_affinity_effective,
             "queue_position": queue_position,
+            "ingest_started_at_utc": rec.ingest_started_at_utc,
             "submitted_at_utc": rec.submitted_at_utc,
             "started_at_utc": rec.started_at_utc,
             "finished_at_utc": rec.finished_at_utc,

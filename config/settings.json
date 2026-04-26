@@ -51,7 +51,7 @@
     "prewarm_language": null,
     "prewarm_align_enabled": false,
     "request_timeout_s": 300.0,
-    "response_poll_ms": 50
+    "response_poll_ms": 25
   },
   "whisperx": {
     "model": "large-v3",
