@@ -191,6 +191,8 @@ async def _shutdown() -> None:
 
 @app.post("/asr/v1/requests")
 async def submit_asr_request(request: Request) -> JSONResponse:
+    ingest_started_at_utc = _iso_utc()
+    ingest_started_mono = time.monotonic()
     content_type = str(request.headers.get("content-type") or "").strip()
     try:
         raw_body = await request.body()
@@ -286,6 +288,10 @@ async def submit_asr_request(request: Request) -> JSONResponse:
     audio.pop("blob_ref", None)
     audio.pop("inline_base64", None)
     raw_payload["audio"] = audio
+    raw_payload["_pool_internal"] = {
+        "ingest_started_at_utc": str(ingest_started_at_utc),
+        "ingest_started_mono": round(float(ingest_started_mono), 6),
+    }
 
     status_code, body = await POOL.submit(raw_payload)
     return JSONResponse(status_code=int(status_code), content=body)

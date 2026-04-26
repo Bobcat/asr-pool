@@ -356,6 +356,7 @@ class PersistentWhisperxRunner:
     aux_sensitive_mode = False
     timings: dict[str, float] = {}
     try:
+      t_total = time.monotonic()
       request_ctx, error = _extract_transcribe_request(envelope)
       if error is not None:
         return error
@@ -369,7 +370,6 @@ class PersistentWhisperxRunner:
         configured_asr_backend_reason=configured_asr_backend_reason,
       )
       aux_sensitive_mode = bool(runtime_ctx["aux_sensitive_mode"])
-      t_total = time.monotonic()
       self._import_deps()
       whisperx = self.whisperx
       get_writer = self.get_writer
@@ -394,9 +394,11 @@ class PersistentWhisperxRunner:
         progress_path=progress_path,
         completed_timings=timings,
       )
+      timings["load_audio_s"] = float(transcribe_phase["load_audio_s"])
       timings["transcribe_s"] = float(transcribe_phase["transcribe_s"])
       if transcribe_phase["transcribe_call_s"] is not None:
         timings["transcribe_call_s"] = round(float(transcribe_phase["transcribe_call_s"]), 6)
+      timings["transcribe_overhead_s"] = float(transcribe_phase["transcribe_overhead_s"])
 
       alignment_phase = _run_alignment_phase(
         self,
@@ -468,6 +470,14 @@ class PersistentWhisperxRunner:
     self._release_aux_models()
 
 
+def _attach_timing(response: dict[str, Any], *, key: str, value_s: float | None) -> None:
+  if value_s is None:
+    return
+  timings = dict(response.get("timings") or {})
+  timings[str(key)] = round(max(0.0, float(value_s)), 6)
+  response["timings"] = timings
+
+
 def _handle_command(runner: PersistentWhisperxRunner, cmd_obj: dict[str, Any]) -> bool:
   cmd = str(cmd_obj.get("cmd") or "").strip().lower()
   if cmd == "shutdown":
@@ -499,17 +509,23 @@ def _handle_command(runner: PersistentWhisperxRunner, cmd_obj: dict[str, Any]) -
     return True
   payload_path = Path(str(cmd_obj.get("payload_path") or ""))
   response_path = Path(str(cmd_obj.get("response_path") or ""))
+  response_timing_path = response_path.parent / f"{response_path.name}.timings.json"
   if not payload_path or not response_path:
     return True
+  request_read_s: float | None = None
   try:
+    t_request_read = time.monotonic()
     envelope = _read_json(payload_path)
+    request_read_s = round(max(0.0, time.monotonic() - t_request_read), 6)
     progress_path_raw = str(cmd_obj.get("progress_path") or "").strip()
     progress_path = Path(progress_path_raw) if progress_path_raw else None
     response = runner.transcribe(envelope, progress_path=progress_path)
   except Exception as e:
     request = {}
     try:
+      t_request_read = time.monotonic()
       envelope = _read_json(payload_path)
+      request_read_s = round(max(0.0, time.monotonic() - t_request_read), 6)
       request = dict(envelope.get("request") or {})
     except Exception:
       request = {}
@@ -526,8 +542,15 @@ def _handle_command(runner: PersistentWhisperxRunner, cmd_obj: dict[str, Any]) -
       },
       "warnings": [],
     }
+  _attach_timing(response, key="warm_runner_request_read_s", value_s=request_read_s)
   try:
+    t_response_write = time.monotonic()
     _write_json_atomic(response_path, response)
+    response_write_s = round(max(0.0, time.monotonic() - t_response_write), 6)
+    _write_json_atomic(
+      response_timing_path,
+      {"timings": {"warm_runner_response_write_s": response_write_s}},
+    )
   except Exception:
     pass
   return True

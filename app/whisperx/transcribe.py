@@ -374,6 +374,7 @@ def _run_transcribe_phase(
   beam_override_unsupported = False
   chunk_size_override_applied = bool(runtime_ctx["chunk_size_override"] is not None)
   chunk_size_override_unsupported = False
+  load_audio_duration_s = 0.0
 
   if runtime_ctx["selected_asr_backend"] == ASR_BACKEND_WHISPERX:
     _log_whisperx_transcribe_call_params(
@@ -385,7 +386,9 @@ def _run_transcribe_phase(
     )
 
   with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+    load_audio_t0 = time.monotonic()
     audio_arr = whisperx.load_audio(str(request_ctx["local_path"]))
+    load_audio_duration_s = round(max(0.0, float(time.monotonic() - load_audio_t0)), 6)
     if runtime_ctx["selected_asr_backend"] == ASR_BACKEND_FASTER_WHISPER_DIRECT:
       transcribe_call_started_utc = _now_iso()
       transcribe_call_t0 = time.monotonic()
@@ -433,6 +436,15 @@ def _run_transcribe_phase(
     duration_s=transcribe_call_duration_s,
   )
 
+  transcribe_duration_s = round(max(0.0, float(time.monotonic() - t0)), 6)
+  transcribe_overhead_s = round(
+    max(
+      0.0,
+      float(transcribe_duration_s - (transcribe_call_duration_s if transcribe_call_duration_s is not None else 0.0)),
+    ),
+    6,
+  )
+
   return {
     "result": result,
     "audio_arr": audio_arr,
@@ -444,8 +456,10 @@ def _run_transcribe_phase(
     "beam_size_override_unsupported": beam_override_unsupported,
     "chunk_size_override_applied": chunk_size_override_applied,
     "chunk_size_override_unsupported": chunk_size_override_unsupported,
-    "transcribe_s": round(max(0.0, float(time.monotonic() - t0)), 6),
+    "load_audio_s": load_audio_duration_s,
+    "transcribe_s": transcribe_duration_s,
     "transcribe_call_s": transcribe_call_duration_s,
+    "transcribe_overhead_s": transcribe_overhead_s,
   }
 
 

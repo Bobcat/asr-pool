@@ -67,7 +67,7 @@ class _AsrPoolWarmRunnerClient:
       prewarm_timeout_s = max(5.0, get_float("warm_runner.prewarm_timeout_s", 180.0, min_value=0.0))
       poll_s = max(
         0.02,
-        float(get_float("warm_runner.response_poll_ms", 50.0, min_value=0.0)) / 1000.0,
+        float(get_float("warm_runner.response_poll_ms", 25.0, min_value=0.0)) / 1000.0,
       )
       prewarm_language = _normalize_optional_language(get_setting("warm_runner.prewarm_language", None))
       prewarm_align_enabled = get_bool("warm_runner.prewarm_align_enabled", False)
@@ -209,7 +209,7 @@ class _AsrPoolWarmRunnerClient:
     request_timeout_s = max(1.0, get_float("warm_runner.request_timeout_s", 120.0, min_value=0.0))
     poll_s = max(
       0.02,
-      float(get_float("warm_runner.response_poll_ms", 50.0, min_value=0.0)) / 1000.0,
+      float(get_float("warm_runner.response_poll_ms", 25.0, min_value=0.0)) / 1000.0,
     )
     with self._lock:
       self._ensure_runner_locked()
@@ -229,8 +229,12 @@ class _AsrPoolWarmRunnerClient:
           "whisperx_out_dir": str(Path(job.whisperx_dir).resolve()),
         },
       }
+      ipc_timings: dict[str, float] = {}
+      t_payload_write = time.monotonic()
       payload_path.write_text(json.dumps(envelope, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+      ipc_timings["warm_runner_payload_write_s"] = round(max(0.0, time.monotonic() - t_payload_write), 6)
       try:
+        t_dispatch = time.monotonic()
         proc.stdin.write(
           json.dumps(
             {
@@ -243,6 +247,7 @@ class _AsrPoolWarmRunnerClient:
           + "\n"
         )
         proc.stdin.flush()
+        ipc_timings["warm_runner_dispatch_s"] = round(max(0.0, time.monotonic() - t_dispatch), 6)
       except Exception as e:
         self._shutdown_locked(reason="stdin_write_failed")
         raise PersistentRunnerClientError(f"Failed to send request to persistent runner: {e!r}") from e
@@ -253,8 +258,13 @@ class _AsrPoolWarmRunnerClient:
           response_path=response_path,
           timeout_s=request_timeout_s,
           poll_s=poll_s,
+          timing_out=ipc_timings,
           timeout_reason="response_timeout",
         )
+        timings = dict(data.get("timings") or {})
+        timings.update(ipc_timings)
+        if timings:
+          data["timings"] = timings
         self._last_used_t = time.monotonic()
         return data
       finally:
@@ -270,18 +280,55 @@ class _AsrPoolWarmRunnerClient:
     response_path: Path,
     timeout_s: float,
     poll_s: float,
+    timing_out: dict[str, float] | None = None,
     timeout_reason: str,
   ) -> dict[str, Any]:
-    deadline = time.monotonic() + max(0.1, float(timeout_s))
+    wait_started_mono = time.monotonic()
+    deadline = wait_started_mono + max(0.1, float(timeout_s))
+    response_timing_path = response_path.parent / f"{response_path.name}.timings.json"
     while time.monotonic() < deadline:
       if response_path.exists():
+        response_mtime_s: float | None = None
+        response_seen_wall_s = time.time()
+        wait_elapsed_s = round(max(0.0, time.monotonic() - wait_started_mono), 6)
         try:
-          return json.loads(response_path.read_text(encoding="utf-8"))
+          response_mtime_s = response_path.stat().st_mtime_ns / 1_000_000_000.0
+        except Exception:
+          response_mtime_s = None
+        t_read = time.monotonic()
+        try:
+          data = json.loads(response_path.read_text(encoding="utf-8"))
+          try:
+            sidecar = (
+              json.loads(response_timing_path.read_text(encoding="utf-8"))
+              if response_timing_path.exists()
+              else {}
+            )
+          except Exception:
+            sidecar = {}
+          sidecar_timings = dict(sidecar.get("timings") or {})
+          if sidecar_timings:
+            response_timings = dict(data.get("timings") or {})
+            response_timings.update(sidecar_timings)
+            data["timings"] = response_timings
+          return data
         except Exception as e:
           raise PersistentRunnerClientError(f"Failed to parse persistent runner response: {e!r}") from e
         finally:
+          if timing_out is not None:
+            timing_out["warm_runner_response_wait_s"] = wait_elapsed_s
+            timing_out["warm_runner_response_read_s"] = round(max(0.0, time.monotonic() - t_read), 6)
+            if response_mtime_s is not None:
+              timing_out["warm_runner_response_poll_lag_s"] = round(
+                max(0.0, response_seen_wall_s - response_mtime_s),
+                6,
+              )
           try:
             response_path.unlink(missing_ok=True)
+          except Exception:
+            pass
+          try:
+            response_timing_path.unlink(missing_ok=True)
           except Exception:
             pass
       if proc.poll() is not None:
