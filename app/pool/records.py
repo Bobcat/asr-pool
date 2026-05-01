@@ -42,6 +42,7 @@ class PoolRecord:
     stage: str | None = None
     stage_started_at_utc: str | None = None
     timings: dict[str, float] | None = None
+    ingest_timings: dict[str, float] | None = None
     retryable: bool | None = None
     response: dict[str, Any] | None = None
     error: dict[str, Any] | None = None

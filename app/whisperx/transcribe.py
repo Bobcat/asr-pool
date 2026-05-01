@@ -53,6 +53,55 @@ def _is_wave_path(path: Path) -> bool:
   return str(path.suffix or "").strip().lower() in {".wav", ".wave"}
 
 
+def _int_or_none(value: Any) -> int | None:
+  try:
+    return int(value)
+  except Exception:
+    return None
+
+
+def _load_pcm16_wav_16khz_mono_or_none(request_ctx: dict[str, Any]) -> Any | None:
+  audio = dict(request_ctx.get("audio") or {})
+  audio_format = str(audio.get("format") or "").strip().lower()
+  local_path = Path(str(request_ctx.get("local_path") or ""))
+  if audio_format and audio_format not in {"wav", "wave"}:
+    return None
+  if not audio_format and not _is_wave_path(local_path):
+    return None
+
+  sample_rate_hz = _int_or_none(audio.get("sample_rate_hz"))
+  if sample_rate_hz is not None and sample_rate_hz != 16000:
+    return None
+  channels = _int_or_none(audio.get("channels"))
+  if channels is not None and channels != 1:
+    return None
+
+  try:
+    with wave.open(str(local_path), "rb") as wf:
+      if int(wf.getnchannels() or 0) != 1:
+        return None
+      if int(wf.getsampwidth() or 0) != 2:
+        return None
+      if int(wf.getframerate() or 0) != 16000:
+        return None
+      if str(wf.getcomptype() or "").upper() != "NONE":
+        return None
+      frames = int(wf.getnframes() or 0)
+      if frames <= 0:
+        return None
+      raw = wf.readframes(frames)
+  except Exception:
+    return None
+  if len(raw) != frames * 2:
+    return None
+
+  import numpy as np
+
+  audio_arr = np.frombuffer(raw, dtype="<i2").astype(np.float32)
+  audio_arr *= float(1.0 / 32768.0)
+  return audio_arr
+
+
 def _transcribe_error(
   *,
   request_id: str,
@@ -387,7 +436,9 @@ def _run_transcribe_phase(
 
   with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
     load_audio_t0 = time.monotonic()
-    audio_arr = whisperx.load_audio(str(request_ctx["local_path"]))
+    audio_arr = _load_pcm16_wav_16khz_mono_or_none(request_ctx)
+    if audio_arr is None:
+      audio_arr = whisperx.load_audio(str(request_ctx["local_path"]))
     load_audio_duration_s = round(max(0.0, float(time.monotonic() - load_audio_t0)), 6)
     if runtime_ctx["selected_asr_backend"] == ASR_BACKEND_FASTER_WHISPER_DIRECT:
       transcribe_call_started_utc = _now_iso()

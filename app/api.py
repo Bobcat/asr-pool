@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from email.parser import BytesParser
-from email.policy import default as email_policy_default
 from pathlib import Path
 from typing import Any
 
@@ -35,30 +33,96 @@ def _safe_suffix(*, filename: str, audio_format: str) -> str:
     return clean or ".bin"
 
 
-def _parse_multipart_submit_payload(*, content_type: str, body: bytes) -> tuple[str, str, bytes]:
-    ctype = str(content_type or "").strip().lower()
-    if "multipart/form-data" not in ctype:
+def _multipart_boundary(content_type: str) -> bytes:
+    ctype = str(content_type or "").strip()
+    if "multipart/form-data" not in ctype.lower():
         raise ValueError("Expected Content-Type multipart/form-data")
+    for raw_part in ctype.split(";"):
+        part = raw_part.strip()
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if key.strip().lower() != "boundary":
+            continue
+        boundary = value.strip().strip('"')
+        if not boundary:
+            break
+        if "\r" in boundary or "\n" in boundary:
+            break
+        return boundary.encode("utf-8")
+    raise ValueError("Missing multipart boundary")
+
+
+def _header_params(value: str) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for raw_part in str(value or "").split(";"):
+        part = raw_part.strip()
+        if "=" not in part:
+            continue
+        key, raw_value = part.split("=", 1)
+        clean_key = key.strip().lower()
+        if not clean_key:
+            continue
+        clean_value = raw_value.strip()
+        if len(clean_value) >= 2 and clean_value[0] == '"' and clean_value[-1] == '"':
+            clean_value = clean_value[1:-1]
+        params[clean_key] = clean_value
+    return params
+
+
+def _parse_multipart_submit_payload(*, content_type: str, body: bytes) -> tuple[str, str, bytes]:
     if not body:
         raise ValueError("Empty multipart request body")
-    header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
-    msg = BytesParser(policy=email_policy_default).parsebytes(header + bytes(body))
-    if not msg.is_multipart():
-        raise ValueError("Malformed multipart request body")
+    delimiter = b"--" + _multipart_boundary(content_type)
     request_json = None
     audio_filename = ""
     audio_bytes = None
-    for part in msg.iter_parts():
-        disposition = str(part.get("Content-Disposition") or "").lower()
-        if "form-data" not in disposition:
+
+    for raw_part in bytes(body).split(delimiter):
+        if not raw_part:
             continue
-        field_name = str(part.get_param("name", header="content-disposition") or "").strip()
-        payload = bytes(part.get_payload(decode=True) or b"")
+        if raw_part.startswith(b"--"):
+            break
+        if raw_part.startswith(b"\r\n"):
+            raw_part = raw_part[2:]
+        elif raw_part.startswith(b"\n"):
+            raw_part = raw_part[1:]
+        if not raw_part.strip():
+            continue
+
+        header_end = raw_part.find(b"\r\n\r\n")
+        separator_len = 4
+        if header_end < 0:
+            header_end = raw_part.find(b"\n\n")
+            separator_len = 2
+        if header_end < 0:
+            raise ValueError("Malformed multipart part")
+
+        raw_headers = raw_part[:header_end]
+        payload = raw_part[header_end + separator_len :]
+        if payload.endswith(b"\r\n"):
+            payload = payload[:-2]
+        elif payload.endswith(b"\n"):
+            payload = payload[:-1]
+
+        headers: dict[str, str] = {}
+        header_text = raw_headers.decode("utf-8", errors="replace").replace("\r\n", "\n")
+        for raw_line in header_text.split("\n"):
+            if ":" not in raw_line:
+                continue
+            name, value = raw_line.split(":", 1)
+            headers[name.strip().lower()] = value.strip()
+
+        disposition = str(headers.get("content-disposition") or "")
+        if "form-data" not in disposition.lower():
+            continue
+        params = _header_params(disposition)
+        field_name = str(params.get("name") or "").strip()
         if field_name == "request_json":
             request_json = payload.decode("utf-8", errors="replace")
             continue
         if field_name == "audio_file":
-            audio_filename = str(part.get_filename() or "").strip()
+            audio_filename = str(params.get("filename") or "").strip()
             audio_bytes = payload
             continue
     if request_json is None:
@@ -193,7 +257,9 @@ async def _shutdown() -> None:
 async def submit_asr_request(request: Request) -> JSONResponse:
     ingest_started_at_utc = _iso_utc()
     ingest_started_mono = time.monotonic()
+    ingest_timings: dict[str, float] = {}
     content_type = str(request.headers.get("content-type") or "").strip()
+    body_read_started_mono = time.monotonic()
     try:
         raw_body = await request.body()
     except Exception as e:
@@ -203,6 +269,11 @@ async def submit_asr_request(request: Request) -> JSONResponse:
             message=f"Failed to read upload body: {type(e).__name__}: {e}",
             retryable=False,
         )
+    ingest_timings["pool_ingest_body_read_s"] = round(
+        max(0.0, float(time.monotonic() - body_read_started_mono)),
+        6,
+    )
+    multipart_parse_started_mono = time.monotonic()
     try:
         request_json, audio_filename, audio_bytes = _parse_multipart_submit_payload(
             content_type=content_type,
@@ -215,6 +286,10 @@ async def submit_asr_request(request: Request) -> JSONResponse:
             message=str(e),
             retryable=False,
         )
+    ingest_timings["pool_ingest_multipart_parse_s"] = round(
+        max(0.0, float(time.monotonic() - multipart_parse_started_mono)),
+        6,
+    )
 
     try:
         parsed = json.loads(str(request_json or ""))
@@ -271,7 +346,12 @@ async def submit_asr_request(request: Request) -> JSONResponse:
             details={"request_id": request_id},
         )
     bytes_written = int(len(audio_bytes))
+    audio_write_started_mono = time.monotonic()
     dst.write_bytes(audio_bytes)
+    ingest_timings["pool_ingest_audio_write_s"] = round(
+        max(0.0, float(time.monotonic() - audio_write_started_mono)),
+        6,
+    )
     if bytes_written <= 0:
         try:
             dst.unlink(missing_ok=True)
@@ -291,6 +371,7 @@ async def submit_asr_request(request: Request) -> JSONResponse:
     raw_payload["_pool_internal"] = {
         "ingest_started_at_utc": str(ingest_started_at_utc),
         "ingest_started_mono": round(float(ingest_started_mono), 6),
+        "ingest_timings": dict(ingest_timings),
     }
 
     status_code, body = await POOL.submit(raw_payload)

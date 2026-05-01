@@ -305,6 +305,8 @@ class AsrPoolService:
     async def submit(self, raw_payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         raw_payload = dict(raw_payload or {})
         pool_internal = dict(raw_payload.pop("_pool_internal", {}) or {})
+        submit_enqueue_started_mono = time.monotonic()
+        ingest_timings = _normalize_progress_timings(pool_internal.get("ingest_timings"))
         try:
             prepared = prepare_request(raw_payload)
         except AsrRequestError as e:
@@ -374,6 +376,10 @@ class AsrPoolService:
                 }
 
             submitted_mono = time.monotonic()
+            ingest_timings["pool_ingest_submit_enqueue_s"] = round(
+                max(0.0, float(submitted_mono - submit_enqueue_started_mono)),
+                6,
+            )
             rec = PoolRecord(
                 request_id=request_id,
                 payload_hash=payload_hash,
@@ -385,6 +391,8 @@ class AsrPoolService:
                 submitted_at_utc=_iso_utc(),
                 ingest_started_mono=ingest_started_mono,
                 submitted_mono=round(float(submitted_mono), 6),
+                timings=(dict(ingest_timings) if ingest_timings else None),
+                ingest_timings=(dict(ingest_timings) if ingest_timings else None),
                 consumer_id=consumer_id,
                 fairness_key=str(fairness_key or ""),
                 slot_affinity_requested=(None if slot_affinity_requested is None else int(slot_affinity_requested)),
@@ -793,6 +801,7 @@ class AsrPoolService:
 
     def _augment_terminal_timings_unlocked(self, rec: PoolRecord) -> None:
         timings = dict(rec.timings or {})
+        timings.update(dict(rec.ingest_timings or {}))
         pool_ingest_s = None
         if rec.ingest_started_mono is not None and rec.submitted_mono is not None:
             pool_ingest_s = max(0.0, float(rec.submitted_mono) - float(rec.ingest_started_mono))
