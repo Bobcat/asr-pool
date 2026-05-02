@@ -110,12 +110,21 @@ Observability endpoints:
 - `GET /ops`
 - `GET /ops/metrics`
 
-The API offers multiple delivery models on purpose:
+The endpoints are meant to be combined differently per client pattern:
 
-- direct request lookup for single-request state
-- pending-status snapshots for progress-oriented clients
-- completion feeds for terminal event delivery
-- artifact fetch for generated outputs such as SRT
+- Live recording clients submit short chunks with `priority: "interactive"`.
+  They usually set `routing.fairness_key` to the live session id and request
+  `outputs.srt_inline=true`, then keep `GET /asr/v1/completions/stream` open.
+  Terminal completion events can carry the SRT text inline at
+  `response.result.srt_text`, which avoids a follow-up artifact fetch per chunk.
+- File upload or batch clients use the default `priority: "normal"`. They can
+  poll `GET /asr/v1/pending-status` or `GET /asr/v1/requests/{request_id}` for
+  progress, consume the completion feed as the terminal signal, and then fetch
+  the durable SRT from `GET /asr/v1/requests/{request_id}/artifacts/srt`.
+- `GET /asr/v1/requests/{request_id}` is useful for one-request inspection,
+  recovery, and debugging. It is not the preferred high-throughput event path.
+- `GET /asr/v1/pool` and the `/ops` endpoints are operator views for queue,
+  slot, and runtime health.
 
 ## Submit Contract
 
@@ -138,16 +147,29 @@ Common request fields include:
 - `outputs`
 - `routing`
 
-`priority: "interactive"` opts a request into latency-sensitive scheduling.
-Requests without that priority use the default non-interactive path. For
-interactive fairness, clients may set `routing.fairness_key`; requests cannot
-target runner slots directly.
+`priority: "interactive"` opts a request into latency-sensitive scheduling for
+live chunks. Requests without that exact priority use the default `normal` path
+for upload and batch work. For interactive fairness, clients may set
+`routing.fairness_key`; requests cannot target runner slots directly.
 
-Minimal example:
+Output flags are explicit. `outputs.srt=true` writes an SRT artifact.
+`outputs.srt_inline=true` also embeds SRT text in the terminal response, which
+is useful for small interactive chunks. The current persistent runner does not
+populate `text` or `segments`, so clients should set those outputs to `false`.
+
+Interactive chunk example:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8090/asr/v1/requests \
-  -F 'request_json={"schema_version":"asr_v2","request_id":"job_demo_1","priority":"interactive","consumer_id":"client-1","audio":{"format":"wav"},"options":{"language":"nl"},"outputs":{"srt":true}}' \
+  -F 'request_json={"schema_version":"asr_v2","request_id":"live_demo_1","priority":"interactive","consumer_id":"live-client","routing":{"fairness_key":"session-1"},"audio":{"format":"wav"},"options":{"language":"nl"},"outputs":{"srt":true,"srt_inline":true,"text":false,"segments":false}}' \
+  -F 'audio_file=@/path/to/chunk.wav'
+```
+
+Normal upload example:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8090/asr/v1/requests \
+  -F 'request_json={"schema_version":"asr_v2","request_id":"upload_demo_1","priority":"normal","consumer_id":"upload-worker","audio":{"format":"wav"},"options":{"language":"nl","align_enabled":true},"outputs":{"srt":true,"srt_inline":false,"text":false,"segments":false}}' \
   -F 'audio_file=@/path/to/audio.wav'
 ```
 
