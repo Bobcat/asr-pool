@@ -7,16 +7,15 @@
   },
   "scheduler": {
     "runner_slots": 6,
+    "interactive_reserved_slots": 3,
     "interactive_burst_max": 8,
     "queue_limits": {
-      "interactive": 8,
-      "normal": 20,
-      "background": 50
+      "interactive": 12,
+      "normal": 70
     },
     "request_timeouts_s": {
       "interactive": 30,
-      "normal": 120,
-      "background": 300
+      "normal": 300
     },
     "stage_poll_ms": 150
   },

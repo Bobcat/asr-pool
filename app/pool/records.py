@@ -48,8 +48,6 @@ class PoolRecord:
     error: dict[str, Any] | None = None
     consumer_id: str = ""
     fairness_key: str = ""
-    slot_affinity_requested: int | None = None
-    slot_affinity_effective: int | None = None
 
 
 class PoolRecordStore:
@@ -116,8 +114,6 @@ class PoolRecordStore:
             "priority": rec.priority,
             "consumer_id": str(rec.consumer_id or "unknown"),
             "fairness_key": str(rec.fairness_key or ""),
-            "slot_affinity_requested": rec.slot_affinity_requested,
-            "slot_affinity_effective": rec.slot_affinity_effective,
             "queue_position": queue_position,
             "ingest_started_at_utc": rec.ingest_started_at_utc,
             "submitted_at_utc": rec.submitted_at_utc,

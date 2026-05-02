@@ -5,24 +5,33 @@ from typing import Any
 
 
 class PoolScheduler:
-    def __init__(self, *, interactive_burst_max: int, interactive_default_fairness_key: str) -> None:
+    def __init__(
+        self,
+        *,
+        runner_slots: int,
+        interactive_reserved_slots: int,
+        interactive_burst_max: int,
+        interactive_default_fairness_key: str,
+    ) -> None:
         self._interactive_default_fairness_key = str(interactive_default_fairness_key)
+        self._runner_slots = max(1, int(runner_slots))
+        self._interactive_reserved_slots = max(0, min(int(interactive_reserved_slots), self._runner_slots))
         self._interactive_burst_max = int(interactive_burst_max)
         self.queues: dict[str, deque[str]] = {
             "interactive": deque(),
             "normal": deque(),
-            "background": deque(),
         }
         self._interactive_burst_count = 0
         self._interactive_rr_last_session_key = ""
-        self._noninteractive_next = "normal"
+
+    @property
+    def interactive_reserved_slots(self) -> int:
+        return int(self._interactive_reserved_slots)
 
     def queue_key_for(self, *, priority: str) -> str:
         p = str(priority or "normal").strip().lower() or "normal"
         if p == "interactive":
             return "interactive"
-        if p == "background":
-            return "background"
         return "normal"
 
     def enqueue(self, rec: Any) -> None:
@@ -32,22 +41,29 @@ class PoolScheduler:
         p = str(priority or "").strip().lower()
         if p == "interactive":
             return int(len(self.queues["interactive"]))
-        if p == "background":
-            return int(len(self.queues["background"]))
         return int(len(self.queues["normal"]))
 
     def queue_depth_snapshot(self) -> dict[str, int]:
         return {
             "interactive": int(self.priority_depth("interactive")),
             "normal": int(self.priority_depth("normal")),
-            "background": int(self.priority_depth("background")),
         }
 
-    def has_running_background(self, records: dict[str, Any]) -> bool:
-        for rec in records.values():
-            if str(rec.state) == "running" and str(rec.priority) == "background":
-                return True
-        return False
+    def _running_count(self, records: dict[str, Any]) -> int:
+        return int(
+            sum(
+                1
+                for rec in records.values()
+                if str(getattr(rec, "state", "")) in {"running", "cancel_requested"}
+            )
+        )
+
+    def _noninteractive_can_dequeue(self, records: dict[str, Any]) -> bool:
+        reserved = int(self._interactive_reserved_slots)
+        if reserved <= 0:
+            return True
+        slots_available = max(0, int(self._runner_slots) - self._running_count(records))
+        return int(slots_available) > reserved
 
     def queue_position(self, rec: Any) -> int | None:
         if str(rec.state) != "queued":
@@ -134,24 +150,18 @@ class PoolScheduler:
                 return str(rid)
         return None
 
-    def _noninteractive_order(self) -> list[str]:
-        if str(self._noninteractive_next) == "background":
-            return ["background", "normal"]
-        return ["normal", "background"]
-
     def _dequeue_order(self) -> list[str]:
         interactive_ready = self.priority_depth("interactive") > 0
         normal_ready = self.priority_depth("normal") > 0
-        background_ready = self.priority_depth("background") > 0
-        noninteractive_ready = normal_ready or background_ready
+        noninteractive_ready = normal_ready
         prefer_noninteractive = (
             interactive_ready
             and noninteractive_ready
             and int(self._interactive_burst_count) >= int(self._interactive_burst_max)
         )
         if prefer_noninteractive:
-            return self._noninteractive_order() + ["interactive"]
-        return ["interactive"] + self._noninteractive_order()
+            return ["normal", "interactive"]
+        return ["interactive", "normal"]
 
     def _note_dequeue_key(self, queue_key: str) -> None:
         key = str(queue_key or "").strip().lower()
@@ -159,20 +169,16 @@ class PoolScheduler:
             self._interactive_burst_count = int(self._interactive_burst_count) + 1
             return
         self._interactive_burst_count = 0
-        if key == "normal":
-            self._noninteractive_next = "background"
-        elif key == "background":
-            self._noninteractive_next = "normal"
 
-    def dequeue_next(self, *, slot_idx: int, records: dict[str, Any]) -> str | None:
+    def dequeue_next(self, *, records: dict[str, Any]) -> str | None:
         for key in self._dequeue_order():
-            if key == "background" and self.has_running_background(records):
-                continue
             if key == "interactive":
                 rid = self._dequeue_interactive_request_id(records)
                 if rid:
                     self._note_dequeue_key(key)
                     return rid
+                continue
+            if key == "normal" and not self._noninteractive_can_dequeue(records):
                 continue
             queue = self.queues[key]
             while queue:
@@ -182,12 +188,6 @@ class PoolScheduler:
                     continue
                 if rec.state != "queued":
                     continue
-                if rec.slot_affinity_effective is not None and int(slot_idx) != int(rec.slot_affinity_effective):
-                    queue.appendleft(rid)
-                    break
-                if key == "background" and self.has_running_background(records):
-                    queue.appendleft(rid)
-                    break
                 self._note_dequeue_key(key)
                 return rid
         return None

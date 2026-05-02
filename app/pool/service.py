@@ -67,15 +67,14 @@ def _timing_value(raw: Any) -> float | None:
 class AsrPoolService:
     def __init__(self) -> None:
         self._runner_slots = get_int("scheduler.runner_slots", 2, min_value=1)
+        self._interactive_reserved_slots = get_int("scheduler.interactive_reserved_slots", 0, min_value=0)
         self._queue_limits = {
             "interactive": get_int("scheduler.queue_limits.interactive", 8, min_value=1),
             "normal": get_int("scheduler.queue_limits.normal", 20, min_value=1),
-            "background": get_int("scheduler.queue_limits.background", 50, min_value=1),
         }
         self._timeouts_s = {
             "interactive": get_int("scheduler.request_timeouts_s.interactive", 30, min_value=1),
             "normal": get_int("scheduler.request_timeouts_s.normal", 120, min_value=1),
-            "background": get_int("scheduler.request_timeouts_s.background", 300, min_value=1),
         }
         self._warm_start_enabled = get_bool("lifecycle.warm_start.enabled", True)
         self._warm_start_timeout_s = get_int("lifecycle.warm_start.timeout_s", 180, min_value=1)
@@ -107,6 +106,8 @@ class AsrPoolService:
             except Exception:
                 self._warm_clients = []
         self._scheduler = PoolScheduler(
+            runner_slots=self._runner_slots,
+            interactive_reserved_slots=self._interactive_reserved_slots,
             interactive_burst_max=self._interactive_burst_max,
             interactive_default_fairness_key=INTERACTIVE_DEFAULT_FAIRNESS_KEY,
         )
@@ -150,6 +151,7 @@ class AsrPoolService:
                 records_ttl_completed_s=int(self._record_store.stats()["ttl_s"]["completed"]),
                 records_ttl_failed_s=int(self._record_store.stats()["ttl_s"]["failed"]),
                 records_ttl_cancelled_s=int(self._record_store.stats()["ttl_s"]["cancelled"]),
+                interactive_reserved_slots=int(self._scheduler.interactive_reserved_slots),
                 interactive_burst_max=int(self._interactive_burst_max),
             )
             if bool(self._watchdog_enabled):
@@ -327,7 +329,7 @@ class AsrPoolService:
         priority = prepared["priority"]
         queue_key = self._scheduler.queue_key_for(priority=priority)
         consumer_id = self._consumer_id_from_request(prepared)
-        fairness_key, slot_affinity_requested, slot_affinity_effective = self._extract_routing_metadata(prepared)
+        fairness_key = self._extract_fairness_key(prepared)
         if not fairness_key:
             fairness_key = INTERACTIVE_DEFAULT_FAIRNESS_KEY
         ingest_started_at_utc = str(pool_internal.get("ingest_started_at_utc") or "").strip() or _iso_utc()
@@ -395,8 +397,6 @@ class AsrPoolService:
                 ingest_timings=(dict(ingest_timings) if ingest_timings else None),
                 consumer_id=consumer_id,
                 fairness_key=str(fairness_key or ""),
-                slot_affinity_requested=(None if slot_affinity_requested is None else int(slot_affinity_requested)),
-                slot_affinity_effective=(None if slot_affinity_effective is None else int(slot_affinity_effective)),
             )
             self._record_store.set(rec)
             self._scheduler.enqueue(rec)
@@ -407,8 +407,6 @@ class AsrPoolService:
                 priority=rec.priority,
                 consumer_id=str(rec.consumer_id or "unknown"),
                 fairness_key=str(rec.fairness_key or ""),
-                slot_affinity_requested=rec.slot_affinity_requested,
-                slot_affinity_effective=rec.slot_affinity_effective,
                 queue_key=queue_key,
                 queue_position=queue_position,
                 queue_depth=self._queue_depth_snapshot_unlocked(),
@@ -602,8 +600,16 @@ class AsrPoolService:
         async with self._lock:
             queued_interactive = self._priority_depth("interactive")
             queued_normal = self._priority_depth("normal")
-            queued_background = self._priority_depth("background")
-            running = sum(1 for rec in self._record_store.values() if rec.state in {"running", "cancel_requested"})
+            running_by_priority = {
+                "interactive": 0,
+                "normal": 0,
+            }
+            for rec in self._record_store.values():
+                if rec.state not in {"running", "cancel_requested"}:
+                    continue
+                key = "interactive" if str(rec.priority) == "interactive" else "normal"
+                running_by_priority[key] = int(running_by_priority[key] + 1)
+            running = int(sum(running_by_priority.values()))
             return {
                 "service": "asr-runtime-pool",
                 "version": "1.0.0",
@@ -611,16 +617,12 @@ class AsrPoolService:
                 "slots_total": int(self._runner_slots),
                 "slots_busy": int(running),
                 "slots_available": int(max(0, self._runner_slots - running)),
-                "slots_by_priority": {
-                    "interactive": int(running),
-                    "normal": 0,
-                    "background": 0,
-                },
+                "slots_by_priority": dict(running_by_priority),
+                "interactive_reserved_slots": int(self._scheduler.interactive_reserved_slots),
                 "queue_limits": dict(self._queue_limits),
                 "queue_depth": {
                     "interactive": int(queued_interactive),
                     "normal": int(queued_normal),
-                    "background": int(queued_background),
                 },
                 "request_timeouts_s": dict(self._timeouts_s),
                 "queue_wait_ms_p95": {},
@@ -636,8 +638,9 @@ class AsrPoolService:
                     "interactive_single_queue": True,
                     "interactive_round_robin_by_session": True,
                     "interactive_default_fairness_key": str(INTERACTIVE_DEFAULT_FAIRNESS_KEY),
+                    "interactive_reserved_slots": int(self._scheduler.interactive_reserved_slots),
                     "interactive_burst_max": int(self._interactive_burst_max),
-                    "fairness_mode": "burst_then_round_robin_interactive_sessions_and_noninteractive_priorities",
+                    "fairness_mode": "reserved_interactive_slots_with_burst_then_round_robin_interactive_sessions",
                 },
             }
 
@@ -648,7 +651,6 @@ class AsrPoolService:
         async with self._lock:
             queued_interactive = self._priority_depth("interactive")
             queued_normal = self._priority_depth("normal")
-            queued_background = self._priority_depth("background")
             running = sum(1 for rec in self._record_store.values() if rec.state in {"running", "cancel_requested"})
             slots_total = int(self._runner_slots)
             slots_busy = int(running)
@@ -657,7 +659,6 @@ class AsrPoolService:
             queue_depth_by_priority = {
                 "interactive": int(queued_interactive),
                 "normal": int(queued_normal),
-                "background": int(queued_background),
             }
             queue_depth_total = int(sum(queue_depth_by_priority.values()))
 
@@ -741,9 +742,6 @@ class AsrPoolService:
     def _queue_depth_snapshot_unlocked(self) -> dict[str, int]:
         return self._scheduler.queue_depth_snapshot()
 
-    def _has_running_background_unlocked(self) -> bool:
-        return self._scheduler.has_running_background(self._record_store.records)
-
     def _emit_event(self, event: str, **fields: Any) -> None:
         payload: dict[str, Any] = {
             "ts_utc": _iso_utc(),
@@ -762,17 +760,9 @@ class AsrPoolService:
         return raw or "unknown"
 
     @staticmethod
-    def _extract_routing_metadata(request: dict[str, Any]) -> tuple[str, int | None, int | None]:
+    def _extract_fairness_key(request: dict[str, Any]) -> str:
         routing = dict(request.get("routing") or {})
-        fairness_key = str(routing.get("fairness_key") or "").strip()
-        slot_affinity_requested: int | None = None
-        if "slot_affinity" in routing and routing.get("slot_affinity") is not None:
-            try:
-                slot_affinity_requested = int(routing.get("slot_affinity"))
-            except Exception:
-                slot_affinity_requested = None
-        slot_affinity_effective: int | None = 0 if slot_affinity_requested == 0 else None
-        return fairness_key, slot_affinity_requested, slot_affinity_effective
+        return str(routing.get("fairness_key") or "").strip()
 
     def _append_completion_event_unlocked(self, rec: PoolRecord) -> None:
         self._completion_feed.append_record(rec)
@@ -884,7 +874,7 @@ class AsrPoolService:
             while True:
                 if self._stopping:
                     raise asyncio.CancelledError()
-                rid = self._scheduler.dequeue_next(slot_idx=slot_idx, records=self._record_store.records)
+                rid = self._scheduler.dequeue_next(records=self._record_store.records)
                 if rid:
                     rec = self._record_store.get(rid)
                     if rec is None:

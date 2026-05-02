@@ -7,7 +7,7 @@ completions, and artifact retrieval for client applications.
 ## What It Does
 
 - accepts audio jobs over a multipart web API
-- queues requests by priority: `interactive`, `normal`, `background`
+- queues requests as either `interactive` or default non-interactive work
 - executes work on warm persistent WhisperX runners
 - stores request records and serves generated SRT artifacts
 - supports both point-in-time status reads and streaming completion delivery
@@ -40,9 +40,9 @@ Possible end-user applications:
 At runtime, the pool keeps a configurable number of runner slots warm and
 dispatches queued work onto those slots. The scheduler supports:
 
-- priority queues for `interactive`, `normal`, and `background`
+- an `interactive` queue and a non-interactive `normal` queue
 - fairness for interactive sessions via `routing.fairness_key`
-- optional slot targeting via `routing.slot_affinity`
+- reserved interactive runner slots that non-interactive work cannot consume
 - completion delivery through both polling and streaming
 
 This makes the service useful both for direct clients and for higher-level
@@ -58,7 +58,7 @@ Configuration files are loaded in this order:
 Primary configuration areas:
 
 - `scheduler.*`
-  controls runner slot count, queue limits, timeouts, and interactive fairness
+  controls runner slot count, interactive reservation, queue limits, timeouts, and interactive fairness
 - `lifecycle.warm_start.*`
   controls prewarming of WhisperX runner slots
 - `lifecycle.watchdog.*`
@@ -80,7 +80,8 @@ Example local override for a smaller CPU-only setup:
 ```json
 {
   "scheduler": {
-    "runner_slots": 1
+    "runner_slots": 1,
+    "interactive_reserved_slots": 0
   },
   "whisperx": {
     "device": "cpu"
@@ -137,6 +138,11 @@ Common request fields include:
 - `outputs`
 - `routing`
 
+`priority: "interactive"` opts a request into latency-sensitive scheduling.
+Requests without that priority use the default non-interactive path. For
+interactive fairness, clients may set `routing.fairness_key`; requests cannot
+target runner slots directly.
+
 Minimal example:
 
 ```bash
@@ -159,6 +165,14 @@ After submission, clients typically use one or more of these read paths:
   streams completion events as they happen
 - `GET /asr/v1/requests/{request_id}/artifacts/srt`
   returns the generated SRT artifact after completion
+
+## Testing
+
+Run the unit test suite with:
+
+```bash
+python3 -m unittest
+```
 
 ## Acknowledgments
 

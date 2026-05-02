@@ -58,14 +58,12 @@ def _validate_audio(audio: dict[str, Any] | None) -> dict[str, Any]:
 
 def _normalize_priority(value: Any) -> str:
   out = str(value or "normal").strip().lower() or "normal"
-  if out not in {"interactive", "normal", "background"}:
-    out = "normal"
-  return out
+  return "interactive" if out == "interactive" else "normal"
 
 
 def _normalize_routing(raw: dict[str, Any] | None) -> dict[str, Any]:
   src = dict(raw or {})
-  allowed = {"fairness_key", "slot_affinity", "timeout_s"}
+  allowed = {"fairness_key"}
   for key in list(src.keys()):
     if key not in allowed:
       raise AsrRequestError(
@@ -77,24 +75,6 @@ def _normalize_routing(raw: dict[str, Any] | None) -> dict[str, Any]:
   fairness_key = str(src.get("fairness_key") or "").strip()
   if fairness_key:
     out["fairness_key"] = fairness_key
-  if "slot_affinity" in src and src.get("slot_affinity") is not None:
-    try:
-      out["slot_affinity"] = int(src.get("slot_affinity"))
-    except Exception:
-      raise AsrRequestError(
-        "ASR_ROUTING_SLOT_AFFINITY_INVALID",
-        "routing.slot_affinity must be an integer when provided",
-        details={"slot_affinity": src.get("slot_affinity")},
-      )
-  if "timeout_s" in src and src.get("timeout_s") is not None:
-    try:
-      out["timeout_s"] = max(1, int(src.get("timeout_s")))
-    except Exception:
-      raise AsrRequestError(
-        "ASR_ROUTING_TIMEOUT_INVALID",
-        "routing.timeout_s must be an integer when provided",
-        details={"timeout_s": src.get("timeout_s")},
-      )
   return out
 
 

@@ -27,8 +27,6 @@ class PoolCompletionFeed:
             "state": str(rec.state),
             "priority": str(rec.priority),
             "fairness_key": str(rec.fairness_key or ""),
-            "slot_affinity_requested": rec.slot_affinity_requested,
-            "slot_affinity_effective": rec.slot_affinity_effective,
             "submitted_at_utc": rec.submitted_at_utc,
             "started_at_utc": rec.started_at_utc,
             "finished_at_utc": rec.finished_at_utc,
