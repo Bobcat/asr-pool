@@ -25,7 +25,7 @@ def _load_server_config() -> dict[str, Any]:
     "compute_type": get_str("whisperx.compute_type", "int8"),
     "batch_size": get_int("whisperx.batch_size", 1, min_value=1),
     "chunk_size": get_int("whisperx.chunk_size", 20, min_value=1),
-    "low_latency_backend": get_str("whisperx.low_latency.backend", "whisperx"),
+    "asr_backend": get_str("asr.backend", "whisperx"),
     "beam_size": get_int("whisperx.beam_size", 5, min_value=1),
     "align_model": get_str("whisperx.align_model", ""),
     "diarize_model": get_str("whisperx.diarize_model", ""),
@@ -55,9 +55,9 @@ def _load_server_config() -> dict[str, Any]:
     cfg["torch_num_threads"] = None
     cfg["torch_num_interop_threads"] = None
 
-  cfg["low_latency_backend"] = str(cfg["low_latency_backend"] or "whisperx").strip().lower() or "whisperx"
-  if cfg["low_latency_backend"] not in {"whisperx", "faster_whisper_direct"}:
-    raise ValueError(f"Invalid whisperx.low_latency.backend: {cfg['low_latency_backend']!r}")
+  cfg["asr_backend"] = str(cfg["asr_backend"] or "whisperx").strip().lower() or "whisperx"
+  if cfg["asr_backend"] not in {"whisperx", "faster_whisper_direct"}:
+    raise ValueError(f"Invalid asr.backend: {cfg['asr_backend']!r}")
 
   return cfg
 

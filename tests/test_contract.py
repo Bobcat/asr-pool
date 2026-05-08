@@ -45,6 +45,54 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(ctx.exception.code, "ASR_UNKNOWN_ROUTING_KEY")
                 self.assertEqual(ctx.exception.details["allowed_routing_keys"], ["fairness_key"])
 
+    def test_language_auto_normalizes_to_autodetect(self) -> None:
+        for raw_language in ("auto", "AUTO", ""):
+            with self.subTest(language=raw_language):
+                prepared = prepare_request(_request(options={"language": raw_language}))
+                self.assertIsNone(prepared["effective_options"].get("language"))
+
+    def test_faster_whisper_experiment_options_are_normalized(self) -> None:
+        prepared = prepare_request(
+            _request(
+                options={
+                    "asr_backend": "FASTER_WHISPER_DIRECT",
+                    "chunk_length": "4",
+                    "vad_filter": "false",
+                    "vad_parameters": {
+                        "threshold": "0.42",
+                        "min_speech_duration_ms": "0",
+                        "speech_pad_ms": "80",
+                        "unknown": "ignored",
+                    },
+                    "word_timestamps": "yes",
+                    "max_new_tokens": "64",
+                    "hotwords": "omniscripta realtime",
+                    "compression_ratio_threshold": "2.1",
+                    "log_prob_threshold": "-0.7",
+                    "no_speech_threshold": "0.5",
+                    "language_detection_threshold": "0.6",
+                    "language_detection_segments": "2",
+                },
+            )
+        )
+
+        opts = prepared["effective_options"]
+        self.assertEqual(opts["asr_backend"], "faster_whisper_direct")
+        self.assertEqual(opts["chunk_length"], 4)
+        self.assertEqual(opts["vad_filter"], False)
+        self.assertEqual(
+            opts["vad_parameters"],
+            {"threshold": 0.42, "min_speech_duration_ms": 0, "speech_pad_ms": 80},
+        )
+        self.assertEqual(opts["word_timestamps"], True)
+        self.assertEqual(opts["max_new_tokens"], 64)
+        self.assertEqual(opts["hotwords"], "omniscripta realtime")
+        self.assertEqual(opts["compression_ratio_threshold"], 2.1)
+        self.assertEqual(opts["log_prob_threshold"], -0.7)
+        self.assertEqual(opts["no_speech_threshold"], 0.5)
+        self.assertEqual(opts["language_detection_threshold"], 0.6)
+        self.assertEqual(opts["language_detection_segments"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

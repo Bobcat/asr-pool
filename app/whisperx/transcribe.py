@@ -160,17 +160,6 @@ def _extract_transcribe_request(envelope: dict[str, Any]) -> tuple[dict[str, Any
       details={"local_path": str(local_path)},
     )
 
-  unsupported_outputs = [k for k in ("text", "segments") if bool(outputs.get(k, False))]
-  if unsupported_outputs:
-    return None, _transcribe_error(
-      request_id=req_id,
-      effective_options=effective_options,
-      code="ASR_UNSUPPORTED_OUTPUT",
-      message="persistent ASR pool runner does not populate requested outputs",
-      retryable=False,
-      details={"requested_outputs": unsupported_outputs},
-    )
-
   if not out_dir_raw:
     return None, _transcribe_error(
       request_id=req_id,
@@ -244,6 +233,22 @@ def _normalize_transcribe_runtime(
       chunk_size_override = max(1, int(effective_options.get("chunk_size")))
   except Exception:
     chunk_size_override = None
+  direct_faster_whisper_options: dict[str, Any] = {}
+  for key in (
+    "chunk_length",
+    "vad_filter",
+    "vad_parameters",
+    "word_timestamps",
+    "max_new_tokens",
+    "hotwords",
+    "compression_ratio_threshold",
+    "log_prob_threshold",
+    "no_speech_threshold",
+    "language_detection_threshold",
+    "language_detection_segments",
+  ):
+    if key in effective_options and effective_options.get(key) is not None:
+      direct_faster_whisper_options[key] = effective_options.get(key)
   if speaker_mode in {"none", "off", "disabled", "no_speaker", "nospeaker", "no-speaker"}:
     speaker_mode = "none"
   elif speaker_mode not in {"auto", "fixed"}:
@@ -269,6 +274,7 @@ def _normalize_transcribe_runtime(
     "initial_prompt": initial_prompt,
     "beam_size_override": beam_size_override,
     "chunk_size_override": chunk_size_override,
+    "direct_faster_whisper_options": direct_faster_whisper_options,
     "asr_backend_override": asr_backend_override,
     "aux_sensitive_mode": aux_sensitive_mode,
     "selected_asr_backend": selected_asr_backend,
@@ -450,6 +456,7 @@ def _run_transcribe_phase(
           initial_prompt=runtime_ctx["initial_prompt"],
           beam_size_override=runtime_ctx["beam_size_override"],
           chunk_size_override=runtime_ctx["chunk_size_override"],
+          direct_options=runtime_ctx["direct_faster_whisper_options"],
         )
       finally:
         transcribe_call_finished_utc = _now_iso()
@@ -617,6 +624,41 @@ def _run_diarization_phase(
   return out
 
 
+def _response_segments(raw_segments: Any) -> list[dict[str, Any]]:
+  out: list[dict[str, Any]] = []
+  for raw_seg in list(raw_segments or []):
+    if not isinstance(raw_seg, dict):
+      continue
+    row: dict[str, Any] = {}
+    for key, value in raw_seg.items():
+      clean_key = str(key or "").strip()
+      if not clean_key:
+        continue
+      if isinstance(value, (str, int, float, bool)) or value is None:
+        row[clean_key] = value
+      elif isinstance(value, list):
+        clean_items: list[Any] = []
+        for item in value:
+          if isinstance(item, dict):
+            clean_items.append(dict(item))
+          elif isinstance(item, (str, int, float, bool)) or item is None:
+            clean_items.append(item)
+        row[clean_key] = clean_items
+      elif isinstance(value, dict):
+        row[clean_key] = dict(value)
+    if str(row.get("text") or "").strip():
+      out.append(row)
+  return out
+
+
+def _segments_text(segments: list[dict[str, Any]]) -> str:
+  return "\n".join(
+    str(seg.get("text") or "").strip()
+    for seg in list(segments or [])
+    if str(seg.get("text") or "").strip()
+  )
+
+
 def _finalize_transcribe_phase(
   cfg: dict[str, Any],
   *,
@@ -632,44 +674,74 @@ def _finalize_transcribe_phase(
   t0 = time.monotonic()
   out_dir = request_ctx["out_dir"]
   local_path = request_ctx["local_path"]
-  out_dir.mkdir(parents=True, exist_ok=True)
-  writer = get_writer("srt", str(out_dir))
-  writer_args = {"highlight_words": False, "max_line_count": None, "max_line_width": None}
-  with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-    writer(phase_ctx["aligned"], str(local_path), writer_args)
+  outputs = dict(request_ctx["outputs"] or {})
+  wants_srt = bool(outputs.get("srt", False)) or bool(outputs.get("srt_inline", False))
+  srt_path: Path | None = None
+  if wants_srt:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    writer = get_writer("srt", str(out_dir))
+    writer_args = {"highlight_words": False, "max_line_count": None, "max_line_width": None}
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+      writer(phase_ctx["aligned"], str(local_path), writer_args)
+    srt_path = out_dir / f"{local_path.stem}.srt"
+    if not srt_path.exists():
+      srts = sorted(out_dir.glob("*.srt"), key=lambda p: p.stat().st_mtime)
+      if not srts:
+        return _transcribe_error(
+          request_id=request_ctx["request_id"],
+          effective_options=request_ctx["effective_options"],
+          code="ASR_OUTPUT_MISSING",
+          message=f"No .srt produced in {out_dir}",
+          retryable=True,
+          details={"out_dir": str(out_dir)},
+        )
+      srt_path = srts[-1]
   timings["finalize_s"] = round(max(0.0, float(time.monotonic() - t0)), 6)
-
-  srt_path = out_dir / f"{local_path.stem}.srt"
-  if not srt_path.exists():
-    srts = sorted(out_dir.glob("*.srt"), key=lambda p: p.stat().st_mtime)
-    if not srts:
-      return _transcribe_error(
-        request_id=request_ctx["request_id"],
-        effective_options=request_ctx["effective_options"],
-        code="ASR_OUTPUT_MISSING",
-        message=f"No .srt produced in {out_dir}",
-        retryable=True,
-        details={"out_dir": str(out_dir)},
-      )
-    srt_path = srts[-1]
 
   timings["total_s"] = round(max(0.0, float(time.monotonic() - t_total)), 6)
   audio_ms = _audio_processed_ms_from_wave(local_path, request_ctx["audio"])
 
-  result_obj: dict[str, Any] = {
-    "artifacts": {
+  aligned = dict(phase_ctx["aligned"] or {})
+  response_segments = _response_segments(aligned.get("segments") or [])
+  result_obj: dict[str, Any] = {}
+  if srt_path is not None:
+    result_obj["artifacts"] = {
       "srt_path": str(srt_path),
-    },
-  }
+    }
   if audio_ms is not None:
     result_obj["audio_processed_ms"] = int(audio_ms)
-  if bool(request_ctx["outputs"].get("srt_inline", False)):
+  language_code = _normalize_optional_language(
+    aligned.get("language")
+    or dict(phase_ctx["result"] or {}).get("language")
+    or runtime_ctx["language"]
+  )
+  language_obj: dict[str, Any] = {}
+  if language_code is not None:
+    language_obj["code"] = str(language_code)
+  direct_backend_metadata = dict(phase_ctx.get("direct_backend_meta") or {}).get("backend_metadata")
+  if isinstance(direct_backend_metadata, dict) and direct_backend_metadata.get("language_probability") is not None:
+    language_obj["probability"] = direct_backend_metadata.get("language_probability")
+  if language_obj:
+    result_obj["language"] = language_obj
+  backend_name = (
+    "faster_whisper_direct"
+    if runtime_ctx["selected_asr_backend"] == ASR_BACKEND_FASTER_WHISPER_DIRECT
+    else "whisperx"
+  )
+  result_obj["backend_metadata"] = {"backend": backend_name}
+  if isinstance(direct_backend_metadata, dict) and direct_backend_metadata:
+    result_obj["backend_metadata"].update(dict(direct_backend_metadata))
+  if bool(outputs.get("segments", False)):
+    result_obj["segments"] = response_segments
+  if bool(outputs.get("text", False)):
+    result_obj["text"] = _segments_text(response_segments)
+  if srt_path is not None and bool(outputs.get("srt_inline", False)):
     try:
       result_obj["srt_text"] = srt_path.read_text(encoding="utf-8")
     except Exception:
       pass
 
-  segments_returned_count = int(len(phase_ctx["result"].get("segments") or []))
+  segments_returned_count = int(len(response_segments))
   runtime = {
     "backend": (
       "faster_whisper_direct"

@@ -74,7 +74,7 @@ class PersistentWhisperxRunner:
     )
 
   def _resolve_default_asr_backend(self) -> tuple[str, str]:
-    raw = str(self.cfg.get("low_latency_backend") or "").strip().lower()
+    raw = str(self.cfg.get("asr_backend") or "").strip().lower()
     if raw in ASR_BACKEND_ALLOWED:
       return raw, "configured"
     raise RuntimeError(f"Invalid default ASR backend configuration: {raw!r}")
@@ -87,6 +87,7 @@ class PersistentWhisperxRunner:
     initial_prompt: str | None,
     beam_size_override: int | None,
     chunk_size_override: int | None,
+    direct_options: dict[str, Any] | None = None,
   ) -> tuple[dict[str, Any], dict[str, Any]]:
     if self.asr_model is None:
       raise RuntimeError("ASR model not loaded")
@@ -94,12 +95,22 @@ class PersistentWhisperxRunner:
     if fw_model is None:
       raise RuntimeError("ASR model has no direct faster-whisper backend")
 
+    safe_direct_options = dict(direct_options or {})
     requested_kwargs: dict[str, Any] = {
       "condition_on_previous_text": False,
-      "vad_filter": True,
+      "vad_filter": bool(safe_direct_options.get("vad_filter", True)),
       "beam_size": int(beam_size_override if beam_size_override is not None else int(self.cfg.get("beam_size", 5) or 5)),
-      "chunk_size": int(chunk_size_override) if chunk_size_override is not None else None,
       "initial_prompt": initial_prompt,
+      "chunk_length": safe_direct_options.get("chunk_length"),
+      "vad_parameters": safe_direct_options.get("vad_parameters"),
+      "word_timestamps": safe_direct_options.get("word_timestamps"),
+      "max_new_tokens": safe_direct_options.get("max_new_tokens"),
+      "hotwords": safe_direct_options.get("hotwords"),
+      "compression_ratio_threshold": safe_direct_options.get("compression_ratio_threshold"),
+      "log_prob_threshold": safe_direct_options.get("log_prob_threshold"),
+      "no_speech_threshold": safe_direct_options.get("no_speech_threshold"),
+      "language_detection_threshold": safe_direct_options.get("language_detection_threshold"),
+      "language_detection_segments": safe_direct_options.get("language_detection_segments"),
     }
     if language is not None:
       requested_kwargs["language"] = str(language)
@@ -148,13 +159,51 @@ class PersistentWhisperxRunner:
         if audio_duration_s > 0.0:
           t0 = max(0.0, min(t0, audio_duration_s))
           t1 = max(t0, min(t1, audio_duration_s))
-        segments.append(
-          {
-            "text": raw_text,
-            "start": round(float(t0), 3),
-            "end": round(float(t1), 3),
-          }
-        )
+        out_seg: dict[str, Any] = {
+          "text": raw_text,
+          "start": round(float(t0), 3),
+          "end": round(float(t1), 3),
+        }
+        for meta_key in ("avg_logprob", "compression_ratio", "no_speech_prob", "temperature"):
+          meta_val = getattr(seg, meta_key, None)
+          if meta_val is None:
+            continue
+          try:
+            out_seg[meta_key] = float(meta_val)
+          except Exception:
+            continue
+        raw_words = getattr(seg, "words", None)
+        words: list[dict[str, Any]] = []
+        for word_obj in list(raw_words or []):
+          try:
+            if isinstance(word_obj, dict):
+              word_text = str(word_obj.get("word") or "").strip()
+              word_start = float(word_obj.get("start") or 0.0)
+              word_end = float(word_obj.get("end") or word_start)
+              probability = word_obj.get("probability")
+            else:
+              word_text = str(getattr(word_obj, "word", "") or "").strip()
+              word_start = float(getattr(word_obj, "start", 0.0) or 0.0)
+              word_end = float(getattr(word_obj, "end", word_start) or word_start)
+              probability = getattr(word_obj, "probability", None)
+            if not word_text:
+              continue
+            row = {
+              "word": word_text,
+              "start": round(float(word_start), 3),
+              "end": round(float(word_end), 3),
+            }
+            if probability is not None:
+              try:
+                row["probability"] = float(probability)
+              except Exception:
+                pass
+            words.append(row)
+          except Exception:
+            continue
+        if words:
+          out_seg["words"] = words
+        segments.append(out_seg)
       except Exception:
         continue
 
@@ -167,16 +216,30 @@ class PersistentWhisperxRunner:
     except Exception:
       pass
 
+    backend_metadata: dict[str, Any] = {}
+    if fw_info is not None:
+      for key in ("language_probability", "duration", "duration_after_vad"):
+        raw_value = getattr(fw_info, key, None)
+        if raw_value is None:
+          continue
+        try:
+          backend_metadata[key] = float(raw_value)
+        except Exception:
+          continue
+
     meta = {
       "accepted_kwargs": sorted(call_kwargs.keys()),
       "dropped_kwargs": sorted(dropped_kwargs),
       "segments_returned_count": int(len(segments)),
+      "backend_metadata": backend_metadata,
       "initial_prompt_applied": bool(initial_prompt) and ("initial_prompt" in call_kwargs),
       "initial_prompt_unsupported": bool(initial_prompt) and ("initial_prompt" not in call_kwargs),
       "beam_size_override_applied": (beam_size_override is not None) and ("beam_size" in call_kwargs),
       "beam_size_override_unsupported": (beam_size_override is not None) and ("beam_size" not in call_kwargs),
-      "chunk_size_override_applied": (chunk_size_override is not None) and ("chunk_size" in call_kwargs),
-      "chunk_size_override_unsupported": (chunk_size_override is not None) and ("chunk_size" not in call_kwargs),
+      "chunk_size_override_applied": False,
+      "chunk_size_override_unsupported": chunk_size_override is not None,
+      "chunk_length_override_applied": (safe_direct_options.get("chunk_length") is not None) and ("chunk_length" in call_kwargs),
+      "chunk_length_override_unsupported": (safe_direct_options.get("chunk_length") is not None) and ("chunk_length" not in call_kwargs),
     }
     return {"segments": segments, "language": out_language}, meta
 

@@ -154,14 +154,14 @@ for upload and batch work. For interactive fairness, clients may set
 
 Output flags are explicit. `outputs.srt=true` writes an SRT artifact.
 `outputs.srt_inline=true` also embeds SRT text in the terminal response, which
-is useful for small interactive chunks. The current persistent runner does not
-populate `text` or `segments`, so clients should set those outputs to `false`.
+is useful when a client still needs SRT text inline. `outputs.text=true` and
+`outputs.segments=true` return JSON transcript fields directly.
 
 Interactive chunk example:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8090/asr/v1/requests \
-  -F 'request_json={"schema_version":"asr_v2","request_id":"live_demo_1","priority":"interactive","consumer_id":"live-client","routing":{"fairness_key":"session-1"},"audio":{"format":"wav"},"options":{"language":"nl"},"outputs":{"srt":true,"srt_inline":true,"text":false,"segments":false}}' \
+  -F 'request_json={"schema_version":"asr_v2","request_id":"live_demo_1","priority":"interactive","consumer_id":"live-client","routing":{"fairness_key":"session-1"},"audio":{"format":"wav"},"options":{"language":"nl"},"outputs":{"text":true,"segments":true,"srt":false,"srt_inline":false}}' \
   -F 'audio_file=@/path/to/chunk.wav'
 ```
 
@@ -169,7 +169,7 @@ Normal upload example:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8090/asr/v1/requests \
-  -F 'request_json={"schema_version":"asr_v2","request_id":"upload_demo_1","priority":"normal","consumer_id":"upload-worker","audio":{"format":"wav"},"options":{"language":"nl","align_enabled":true},"outputs":{"srt":true,"srt_inline":false,"text":false,"segments":false}}' \
+  -F 'request_json={"schema_version":"asr_v2","request_id":"upload_demo_1","priority":"normal","consumer_id":"upload-worker","audio":{"format":"wav"},"options":{"language":"nl","align_enabled":true},"outputs":{"text":true,"segments":true,"srt":true,"srt_inline":false}}' \
   -F 'audio_file=@/path/to/audio.wav'
 ```
 

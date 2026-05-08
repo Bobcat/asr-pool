@@ -26,7 +26,7 @@ def _fingerprint_cfg(cfg: dict[str, Any]) -> str:
     "compute_type",
     "batch_size",
     "chunk_size",
-    "low_latency_backend",
+    "asr_backend",
     "beam_size",
     "align_model",
     "torch_num_threads",

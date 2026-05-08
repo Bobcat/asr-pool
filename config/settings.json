@@ -5,6 +5,9 @@
   "paths": {
     "work_root": "data/asr_pool"
   },
+  "asr": {
+    "backend": "whisperx"
+  },
   "scheduler": {
     "runner_slots": 6,
     "interactive_reserved_slots": 3,
@@ -58,9 +61,6 @@
     "compute_type": "int8",
     "batch_size": 8,
     "chunk_size": 20,
-    "low_latency": {
-      "backend": "whisperx"
-    },
     "debug": {
       "log_transcribe_call_params": false
     },
