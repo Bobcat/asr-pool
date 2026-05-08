@@ -6,11 +6,37 @@ This note documents the practical differences between the current WhisperX path
 and the experimental `faster_whisper_direct` path in `asr-pool`.
 
 The goal is to make backend behavior understandable enough to run targeted
-experiments, and to define the code changes needed to expose faster-whisper
-arguments and results without splitting the ASR request lifecycle.
+experiments, and to document how faster-whisper arguments and results are
+exposed without splitting the ASR request lifecycle.
 
 This is not a workflow policy document. It describes backend behavior,
 available knobs, result shapes, and implementation work.
+
+## Current Reality
+
+As of May 8, 2026, the implementation described by this note has been done in
+`asr-pool`, with matching request-option support in `asr-pool-api` and live
+JSON-output usage in `asr-translate-tts-dev`.
+
+Keep this document as a backend reference, not as an open implementation plan.
+It is useful for comparing the WhisperX path with the
+`faster_whisper_direct` path, choosing experiment knobs, and understanding what
+clients can expect in request options and result shapes.
+
+Current implemented behavior:
+
+- backend selection uses `options.asr_backend`, with global default
+  `asr.backend`
+- `whisperx` remains the default backend
+- `faster_whisper_direct` uses the loaded WhisperX object's underlying
+  faster-whisper model
+- `chunk_size` is WhisperX-only
+- `chunk_length` is the faster-whisper direct chunk knob
+- `outputs.text` and `outputs.segments` are populated as JSON outputs
+- SRT is produced only when `outputs.srt=true` or
+  `outputs.srt_inline=true`
+- direct-FW responses expose selected decode metadata, not raw
+  faster-whisper objects
 
 ## Current Architecture
 
